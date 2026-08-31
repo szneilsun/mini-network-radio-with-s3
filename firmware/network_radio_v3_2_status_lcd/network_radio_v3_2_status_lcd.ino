@@ -1326,24 +1326,19 @@ class St7735rDisplay {
     if (now - lastBlinkAt_ < 500) return;
     lastBlinkAt_ = now;
     blinkOn_ = !blinkOn_;
-    fillRect(61, 121, 6, 3, blinkOn_ ? kOrange : kDimOrange);
+    fillRect(61, 123, 6, 3, blinkOn_ ? kOrange : kDimOrange);
   }
 
-  void showStatus(const char *stationName, const char *logoFile, bool wifiConnected,
-                  int32_t rssi, uint8_t volume, bool playing) {
-    const uint8_t wifiPercent = wifiConnected
-                                    ? static_cast<uint8_t>(constrain(map(rssi, -90, -45, 0, 100), 0, 100) / 10 * 10)
-                                    : 0;
+  void showStatus(const char *stationName, const char *logoFile, uint8_t volume,
+                  bool playing) {
     const bool stationChanged = strncmp(stationName, stationName_, sizeof(stationName_)) != 0 ||
                                 strncmp(logoFile, logoFile_, sizeof(logoFile_)) != 0;
-    if (showingStatusPage_ && !stationChanged && wifiPercent == wifiPercent_ &&
-        volume == volume_ && playing == playing_) {
+    if (showingStatusPage_ && !stationChanged && volume == volume_) {
       return;
     }
 
     strlcpy(stationName_, stationName, sizeof(stationName_));
     strlcpy(logoFile_, logoFile, sizeof(logoFile_));
-    wifiPercent_ = wifiPercent;
     volume_ = volume;
     playing_ = playing;
     showingStatusPage_ = true;
@@ -1366,7 +1361,6 @@ class St7735rDisplay {
   bool blinkOn_ = true;
   bool showingStatusPage_ = false;
   bool playing_ = false;
-  uint8_t wifiPercent_ = 0;
   uint8_t volume_ = 0;
   char stationName_[config::kStationNameSize] = {};
   char logoFile_[config::kStationLogoSize] = {};
@@ -1534,19 +1528,11 @@ class St7735rDisplay {
     fillRect(103, 94, 12, 12, blinkOn_ ? kGreen : kBlack);
   }
 
-  void drawWifi(uint8_t x, uint8_t y, uint8_t percent) {
-    const uint16_t color = percent > 0 ? kWhite : kDimOrange;
-    fillRect(x + 5, y + 8, 3, 3, color);
-    fillRect(x + 2, y + 5, 9, 2, color);
-    fillRect(x, y + 2, 13, 2, color);
-    fillRect(x + 2, y, 9, 1, color);
-  }
-
   void drawVolume() {
     const uint8_t width = static_cast<uint8_t>(map(volume_, 0, 21, 0, 52));
-    fillRect(35, 108, 58, 4, kCharcoal);
-    if (width > 0) fillRect(35, 108, width, 4, kOrange);
-    drawText(99, 107, String(map(volume_, 0, 21, 0, 100)).c_str(), 1, kWhite);
+    fillRect(35, 113, 58, 4, kCharcoal);
+    if (width > 0) fillRect(35, 113, width, 4, kOrange);
+    drawText(99, 112, String(map(volume_, 0, 21, 0, 100)).c_str(), 1, kWhite);
   }
 
   void drawLogoCard() {
@@ -1597,16 +1583,13 @@ class St7735rDisplay {
   }
 
   void drawStatusPage() {
+    // A station switch must never leave pixels from the previous JPEG behind.
     fillScreen(kBlack);
-    drawWifi(95, 5, wifiPercent_);
-    char percent[5] = {};
-    snprintf(percent, sizeof(percent), "%u%%", wifiPercent_);
-    drawText(109, 7, percent, 1, kWhite);
-    drawLogoCard();
+    fillRect(16, 5, 96, 66, kCard);
     bool logoDrawn = false;
     if (logoFile_[0] != '\0' && LittleFS.exists(String("/logos/") + logoFile_)) {
       TJpgDec.setJpgScale(2);
-      logoDrawn = TJpgDec.drawFsJpg(32, 15, String("/logos/") + logoFile_, LittleFS) == JDR_OK;
+      logoDrawn = TJpgDec.drawFsJpg(32, 6, String("/logos/") + logoFile_, LittleFS) == JDR_OK;
     }
     if (!logoDrawn) drawLogoCard();
     drawStationName();
@@ -1614,9 +1597,9 @@ class St7735rDisplay {
     fillRect(63, 100, 1, 4, kBlack);
     fillRect(65, 100, 1, 4, kBlack);
     drawVolume();
-    fillRect(53, 121, 3, 3, kDimOrange);
-    fillRect(61, 121, 6, 3, kOrange);
-    fillRect(72, 121, 3, 3, kDimOrange);
+    fillRect(53, 123, 3, 3, kDimOrange);
+    fillRect(61, 123, 6, 3, kOrange);
+    fillRect(72, 123, 3, 3, kDimOrange);
   }
 };
 
@@ -2782,8 +2765,7 @@ void loop() {
   updateStatusLed();
   const char *lcdStation = stationCount > 0 ? stations[selectedStation].name : "NETWORK RADIO";
   const char *lcdLogo = stationCount > 0 ? stations[selectedStation].logo : "";
-  lcd.showStatus(lcdStation, lcdLogo, WiFi.status() == WL_CONNECTED, WiFi.RSSI(),
-                 playerVolume, audio.isRunning());
+  lcd.showStatus(lcdStation, lcdLogo, playerVolume, audio.isRunning());
   lcd.update();
 }
 #endif  // NETWORK_RADIO_V8_NO_ENTRYPOINT
