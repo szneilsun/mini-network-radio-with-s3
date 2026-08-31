@@ -1741,7 +1741,10 @@ void importBuiltinStations() {
   importPreferences.begin("catalog", false);
   const bool imported = importPreferences.getBool(kLegacyBuiltinCatalogKey, false);
   importPreferences.end();
-  if (imported) return;
+  // A LittleFS resource refresh can replace the playlist files while the
+  // import marker remains in NVS.  Rebuild the built-in catalog when the
+  // active playlist is empty instead of leaving the player with no stations.
+  if (imported && stationCount > 0) return;
 
   bool complete = false;
   importBuiltinRange(0, kBuiltinStationCount, complete);
@@ -1757,7 +1760,7 @@ bool importNewsStationPack() {
   importPreferences.begin("catalog", false);
   const bool imported = importPreferences.getBool(kNewsStationPackKey, false);
   importPreferences.end();
-  if (imported) return false;
+  if (imported && stationCount > 0) return false;
 
   bool complete = false;
   const bool changed = importBuiltinRange(kLegacyBuiltinStationCount,
