@@ -23,6 +23,8 @@
 #include <TJpg_Decoder.h>
 #include <esp32-hal-psram.h>
 
+#include "chinese_font_16.h"
+
 // Reuse V4's provisioning and playlist persistence helpers.
 #ifndef NETWORK_RADIO_VERSION
 #define NETWORK_RADIO_VERSION "0.5.0-playback"
@@ -1298,7 +1300,7 @@ class St7735rDisplay {
     command(0xC3, power4, sizeof(power4));
     command(0xC4, power5, sizeof(power5));
     command(0xC5, vcom, sizeof(vcom));
-    const uint8_t madctl[] = {0xC8};  // 128x128 ST7735R, BGR color order.
+    const uint8_t madctl[] = {0x08};  // 128x128 ST7735R, BGR color order, rotated 180 degrees.
     const uint8_t colorMode[] = {0x05};  // 16-bit RGB565.
     command(0x36, madctl, sizeof(madctl));
     command(0x3A, colorMode, sizeof(colorMode));
@@ -1555,6 +1557,45 @@ class St7735rDisplay {
     drawText(45, 59, "LIVE", 1, kBlack);
   }
 
+  const ChineseGlyph16 *findChineseGlyph(uint16_t codepoint) const {
+    for (uint16_t index = 0; index < kChineseGlyphCount; ++index) {
+      if (kChineseGlyphs[index].codepoint == codepoint) return &kChineseGlyphs[index];
+    }
+    return nullptr;
+  }
+
+  void drawChineseGlyph(uint8_t x, uint8_t y, const ChineseGlyph16 &glyph, uint16_t color) {
+    for (uint8_t row = 0; row < 16; ++row) {
+      uint8_t column = 0;
+      while (column < 16) {
+        while (column < 16 && (glyph.rows[row] & (1U << (15U - column))) == 0) ++column;
+        const uint8_t start = column;
+        while (column < 16 && (glyph.rows[row] & (1U << (15U - column))) != 0) ++column;
+        if (column > start) fillRect(x + start, y + row, column - start, 1, color);
+      }
+    }
+  }
+
+  void drawStationName() {
+    uint8_t x = 8;
+    const uint8_t *text = reinterpret_cast<const uint8_t *>(stationName_);
+    while (*text != '\0' && x < 112) {
+      if ((*text & 0x80U) == 0) {
+        if (x + 6 > 120) break;
+        drawGlyph(x, 80, static_cast<char>(*text++), 1, kWhite);
+        x += 6;
+        continue;
+      }
+      if ((text[0] & 0xF0U) != 0xE0U || text[1] == 0 || text[2] == 0 || x + 16 > 120) break;
+      const uint16_t codepoint = static_cast<uint16_t>(((text[0] & 0x0FU) << 12) |
+                                ((text[1] & 0x3FU) << 6) | (text[2] & 0x3FU));
+      const ChineseGlyph16 *glyph = findChineseGlyph(codepoint);
+      if (glyph != nullptr) drawChineseGlyph(x, 80, *glyph, kWhite);
+      x += 16;
+      text += 3;
+    }
+  }
+
   void drawStatusPage() {
     fillScreen(kBlack);
     drawWifi(95, 5, wifiPercent_);
@@ -1568,10 +1609,10 @@ class St7735rDisplay {
       logoDrawn = TJpgDec.drawFsJpg(32, 15, String("/logos/") + logoFile_, LittleFS) == JDR_OK;
     }
     if (!logoDrawn) drawLogoCard();
-    drawText(46, 82, playing_ ? "LIVE" : "WAIT", 2, playing_ ? kWhite : kDimOrange);
-    fillRect(61, 97, 6, 6, kOrange);
-    fillRect(63, 98, 1, 4, kBlack);
-    fillRect(65, 98, 1, 4, kBlack);
+    drawStationName();
+    fillRect(61, 99, 6, 6, playing_ ? kOrange : kDimOrange);
+    fillRect(63, 100, 1, 4, kBlack);
+    fillRect(65, 100, 1, 4, kBlack);
     drawVolume();
     fillRect(53, 121, 3, 3, kDimOrange);
     fillRect(61, 121, 6, 3, kOrange);
