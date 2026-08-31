@@ -1,5 +1,5 @@
 /*
- * Network Radio 3.2.0 standalone Arduino sketch with ST7735R status LCD.
+ * Network Radio 3.2.1 standalone Arduino sketch with ST7735R status LCD.
  * Project-local source dependencies are inlined in this file.
  *
  * The superseded V4 test-tone/I2S path and unused legacy web pages have
@@ -9,7 +9,7 @@
 
 /* Network Radio 3.0: player UI, administration UI, and WS2812B status LED. */
 
-#define NETWORK_RADIO_VERSION "3.2.0-status-lcd"
+#define NETWORK_RADIO_VERSION "3.2.1-status-lcd"
 #define NETWORK_RADIO_MAX_STATIONS 140
 #ifdef NETWORK_RADIO_NO_ENTRYPOINT
 #define NETWORK_RADIO_V8_NO_ENTRYPOINT
@@ -1322,11 +1322,11 @@ class St7735rDisplay {
 
   void update() {
     if (!showingStatusPage_) return;
-    const uint32_t now = millis();
-    if (now - lastBlinkAt_ < 500) return;
-    lastBlinkAt_ = now;
-    blinkOn_ = !blinkOn_;
-    fillRect(61, 123, 6, 3, blinkOn_ ? kOrange : kDimOrange);
+    if (stationNameWidth_ <= 112 || millis() - lastMarqueeAt_ < 420) return;
+    lastMarqueeAt_ = millis();
+    marqueeCharacter_ = static_cast<uint8_t>((marqueeCharacter_ + 1) %
+                                              (stationNameCharacters_ + 4));
+    drawStationName(marqueeCharacter_);
   }
 
   void showStatus(const char *stationName, const char *logoFile, uint8_t volume,
@@ -1344,6 +1344,9 @@ class St7735rDisplay {
     showingStatusPage_ = true;
     blinkOn_ = true;
     lastBlinkAt_ = millis();
+    lastMarqueeAt_ = millis();
+    marqueeCharacter_ = 0;
+    measureStationName();
     drawStatusPage();
   }
 
@@ -1351,19 +1354,23 @@ class St7735rDisplay {
   static constexpr uint8_t kWidth = 128;
   static constexpr uint8_t kHeight = 128;
   static constexpr uint8_t kColumnOffset = 2;
-  static constexpr uint8_t kRowOffset = 3;
+  static constexpr uint8_t kRowOffset = 2;
   static constexpr uint16_t kOrange = 0xFC00;
   static constexpr uint16_t kDimOrange = 0x8200;
   static constexpr uint16_t kCharcoal = 0x0841;
   static constexpr uint16_t kCard = 0xFFFF;
 
   uint32_t lastBlinkAt_ = 0;
+  uint32_t lastMarqueeAt_ = 0;
   bool blinkOn_ = true;
   bool showingStatusPage_ = false;
   bool playing_ = false;
   uint8_t volume_ = 0;
   char stationName_[config::kStationNameSize] = {};
   char logoFile_[config::kStationLogoSize] = {};
+  uint8_t stationNameCharacters_ = 0;
+  uint16_t stationNameWidth_ = 0;
+  uint8_t marqueeCharacter_ = 0;
 
   void command(uint8_t value, const uint8_t *data = nullptr, size_t length = 0) {
     SPI.beginTransaction(SPISettings(config::kTftSpiHz, MSBFIRST, SPI_MODE0));
@@ -1562,9 +1569,26 @@ class St7735rDisplay {
     }
   }
 
-  void drawStationName() {
-    uint8_t x = 8;
+  void measureStationName() {
+    stationNameCharacters_ = 0;
+    stationNameWidth_ = 0;
     const uint8_t *text = reinterpret_cast<const uint8_t *>(stationName_);
+    while (*text != '\0') {
+      const bool chinese = (*text & 0x80U) != 0 && text[1] != 0 && text[2] != 0;
+      stationNameWidth_ += chinese ? 16 : 6;
+      ++stationNameCharacters_;
+      text += chinese ? 3 : 1;
+    }
+  }
+
+  void drawStationName(uint8_t startCharacter = 0) {
+    fillRect(0, 76, kWidth, 18, kBlack);
+    uint8_t x = stationNameWidth_ <= 112 ?
+                    static_cast<uint8_t>((kWidth - stationNameWidth_) / 2) : 8;
+    const uint8_t *text = reinterpret_cast<const uint8_t *>(stationName_);
+    for (uint8_t skipped = 0; skipped < startCharacter && *text != '\0'; ++skipped) {
+      text += (*text & 0x80U) != 0 ? 3 : 1;
+    }
     while (*text != '\0' && x < 112) {
       if ((*text & 0x80U) == 0) {
         if (x + 6 > 120) break;
@@ -1593,13 +1617,7 @@ class St7735rDisplay {
     }
     if (!logoDrawn) drawLogoCard();
     drawStationName();
-    fillRect(61, 99, 6, 6, playing_ ? kOrange : kDimOrange);
-    fillRect(63, 100, 1, 4, kBlack);
-    fillRect(65, 100, 1, 4, kBlack);
     drawVolume();
-    fillRect(53, 123, 3, 3, kDimOrange);
-    fillRect(61, 123, 6, 3, kOrange);
-    fillRect(72, 123, 3, 3, kDimOrange);
   }
 };
 
