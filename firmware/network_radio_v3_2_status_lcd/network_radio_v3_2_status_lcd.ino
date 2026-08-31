@@ -20,6 +20,7 @@
 
 #include <Audio.h>
 #include <LittleFS.h>
+#include <TJpg_Decoder.h>
 #include <esp32-hal-psram.h>
 
 // Reuse V4's provisioning and playlist persistence helpers.
@@ -1293,18 +1294,20 @@ class St7735rDisplay {
     fillRect(61, 121, 6, 3, blinkOn_ ? kOrange : kDimOrange);
   }
 
-  void showStatus(const char *stationName, bool wifiConnected,
+  void showStatus(const char *stationName, const char *logoFile, bool wifiConnected,
                   int32_t rssi, uint8_t volume, bool playing) {
     const uint8_t wifiPercent = wifiConnected
                                     ? static_cast<uint8_t>(constrain(map(rssi, -90, -45, 0, 100), 0, 100) / 10 * 10)
                                     : 0;
-    const bool stationChanged = strncmp(stationName, stationName_, sizeof(stationName_)) != 0;
+    const bool stationChanged = strncmp(stationName, stationName_, sizeof(stationName_)) != 0 ||
+                                strncmp(logoFile, logoFile_, sizeof(logoFile_)) != 0;
     if (showingStatusPage_ && !stationChanged && wifiPercent == wifiPercent_ &&
         volume == volume_ && playing == playing_) {
       return;
     }
 
     strlcpy(stationName_, stationName, sizeof(stationName_));
+    strlcpy(logoFile_, logoFile, sizeof(logoFile_));
     wifiPercent_ = wifiPercent;
     volume_ = volume;
     playing_ = playing;
@@ -1331,6 +1334,7 @@ class St7735rDisplay {
   uint8_t wifiPercent_ = 0;
   uint8_t volume_ = 0;
   char stationName_[config::kStationNameSize] = {};
+  char logoFile_[config::kStationLogoSize] = {};
 
   void command(uint8_t value, const uint8_t *data = nullptr, size_t length = 0) {
     SPI.beginTransaction(SPISettings(config::kTftSpiHz, MSBFIRST, SPI_MODE0));
@@ -1383,6 +1387,26 @@ class St7735rDisplay {
     digitalWrite(config::kTftCs, HIGH);
     SPI.endTransaction();
   }
+
+ public:
+  bool drawJpegBlock(int16_t x, int16_t y, uint16_t width, uint16_t height,
+                     uint16_t *pixels) {
+    if (x < 0 || y < 0 || x + width > kWidth || y + height > kHeight) return false;
+    SPI.beginTransaction(SPISettings(config::kTftSpiHz, MSBFIRST, SPI_MODE0));
+    digitalWrite(config::kTftCs, LOW);
+    setWindow(static_cast<uint8_t>(x), static_cast<uint8_t>(y),
+              static_cast<uint8_t>(width), static_cast<uint8_t>(height));
+    digitalWrite(config::kTftDc, HIGH);
+    for (uint32_t index = 0; index < static_cast<uint32_t>(width) * height; ++index) {
+      SPI.transfer(static_cast<uint8_t>(pixels[index] >> 8));
+      SPI.transfer(static_cast<uint8_t>(pixels[index]));
+    }
+    digitalWrite(config::kTftCs, HIGH);
+    SPI.endTransaction();
+    return true;
+  }
+
+ private:
 
   const uint8_t *glyph(char character) const {
     static constexpr uint8_t kSpace[] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
@@ -1493,21 +1517,9 @@ class St7735rDisplay {
   void drawLogoCard() {
     fillRect(20, 15, 88, 51, kCard);
     fillRect(20, 15, 88, 2, kOrange);
-    const bool isCnr = strstr(stationName_, "CNR") != nullptr;
-    if (isCnr) {
-      drawText(27, 25, "CNR", 5, kBlack);
-      fillRect(84, 27, 3, 15, kOrange);
-      fillRect(89, 23, 3, 23, kOrange);
-      fillRect(94, 19, 3, 31, kOrange);
-      fillRect(99, 23, 3, 23, kOrange);
-      fillRect(104, 27, 2, 15, kOrange);
-      fillRect(27, 56, 74, 2, kOrange);
-      drawText(45, 60, "MUSIC", 1, kBlack);
-    } else {
-      drawText(32, 28, "RADIO", 3, kBlack);
-      fillRect(28, 54, 72, 2, kOrange);
-      drawText(45, 59, "LIVE", 1, kBlack);
-    }
+    drawText(32, 28, "RADIO", 3, kBlack);
+    fillRect(28, 54, 72, 2, kOrange);
+    drawText(45, 59, "LIVE", 1, kBlack);
   }
 
   void drawStatusPage() {
@@ -1517,10 +1529,16 @@ class St7735rDisplay {
     snprintf(percent, sizeof(percent), "%u%%", wifiPercent_);
     drawText(109, 7, percent, 1, kWhite);
     drawLogoCard();
-    drawText(46, 71, playing_ ? "LIVE" : "WAIT", 2, playing_ ? kWhite : kDimOrange);
-    fillRect(61, 88, 6, 6, kOrange);
-    fillRect(63, 89, 1, 4, kBlack);
-    fillRect(65, 89, 1, 4, kBlack);
+    bool logoDrawn = false;
+    if (logoFile_[0] != '\0' && LittleFS.exists(String("/logos/") + logoFile_)) {
+      TJpgDec.setJpgScale(2);
+      logoDrawn = TJpgDec.drawFsJpg(32, 15, String("/logos/") + logoFile_, LittleFS) == JDR_OK;
+    }
+    if (!logoDrawn) drawLogoCard();
+    drawText(46, 82, playing_ ? "LIVE" : "WAIT", 2, playing_ ? kWhite : kDimOrange);
+    fillRect(61, 97, 6, 6, kOrange);
+    fillRect(63, 98, 1, 4, kBlack);
+    fillRect(65, 98, 1, 4, kBlack);
     drawVolume();
     fillRect(53, 121, 3, 3, kDimOrange);
     fillRect(61, 121, 6, 3, kOrange);
@@ -1529,6 +1547,11 @@ class St7735rDisplay {
 };
 
 St7735rDisplay lcd;
+
+bool drawLcdJpegBlock(int16_t x, int16_t y, uint16_t width, uint16_t height,
+                      uint16_t *pixels) {
+  return lcd.drawJpegBlock(x, y, width, height, pixels);
+}
 
 char adminPassword[64] = {};
 char uiBackground[8] = "#656b6a";
@@ -2633,6 +2656,8 @@ void setup() {
   Serial.begin(config::kSerialBaud); delay(300);
   rgbLedWrite(kStatusLedPin, 0, 0, 0);
   lcd.begin();
+  TJpgDec.setCallback(drawLcdJpegBlock);
+  TJpgDec.setSwapBytes(false);
   lcd.runStartupSequence();
   Serial.println("ST7735R LCD startup test complete.");
   snprintf(accessPointSsid, sizeof(accessPointSsid), "%s%04X", config::kAccessPointPrefix, setupAccessPointId());
@@ -2671,7 +2696,8 @@ void loop() {
   audio.loop();
   updateStatusLed();
   const char *lcdStation = stationCount > 0 ? stations[selectedStation].name : "NETWORK RADIO";
-  lcd.showStatus(lcdStation, WiFi.status() == WL_CONNECTED, WiFi.RSSI(),
+  const char *lcdLogo = stationCount > 0 ? stations[selectedStation].logo : "";
+  lcd.showStatus(lcdStation, lcdLogo, WiFi.status() == WL_CONNECTED, WiFi.RSSI(),
                  playerVolume, audio.isRunning());
   lcd.update();
 }

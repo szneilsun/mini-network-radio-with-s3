@@ -10,7 +10,8 @@
 启动后，页面自动切换为纯状态屏（LCD 本身不要求触摸功能）：
 
 - 右上角显示 Wi-Fi 图标与信号百分比；
-- 中央显示大号电台标识卡。`CNR` 电台显示橙黑色 CNR 音乐台标，其余电台显示通用 RADIO 标识；
+- 中央显示当前电台的 JPEG 台标。系统从 LittleFS 的 `/logos/` 读取播放列表中该电台的
+  `logo` 文件名，并以 64×64 显示；缺图或解码失败时才显示通用 RADIO 标识；
 - 中部显示 `LIVE` 或 `WAIT`；
 - 下方显示音量条与百分比；
 - 底部仅保留三颗小状态点，中间点每 500 ms 闪烁。
@@ -53,3 +54,9 @@ ESP32_SKETCH_DIR="$PWD/firmware/network_radio_v3_2_status_lcd" ./tools/build-fir
 
 构建继续使用 ESP32-S3 的 16 MiB Flash、双 OTA 应用槽和 8 MiB PSRAM 配置。V3.2.0
 保持 V3.0.2 的 NVS 命名空间与播放列表格式，可通过原有管理页面 OTA 升级。
+
+主工程还需要安装 `TJpg_Decoder` 1.1.0 以解码 JPEG 台标：
+
+```bash
+arduino-cli lib install "TJpg_Decoder@1.1.0"
+```
