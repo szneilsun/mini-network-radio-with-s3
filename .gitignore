@@ -1,0 +1,19 @@
+.DS_Store
+.playwright-mcp/
+
+# Arduino build outputs and release images are reproducible from source.
+build/
+**/build/
+*.bin
+*.elf
+*.map
+*.partitions.bin
+*.merged.bin
+compile_commands.json
+sdkconfig
+libraries.cache
+includes.cache
+file_opts
+build.options.json
+build_opt.h
+flash_args
