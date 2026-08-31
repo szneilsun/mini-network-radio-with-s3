@@ -60,3 +60,11 @@ ESP32_SKETCH_DIR="$PWD/firmware/network_radio_v3_2_status_lcd" ./tools/build-fir
 ```bash
 arduino-cli lib install "TJpg_Decoder@1.1.0"
 ```
+
+## Wi-Fi 扫描与换网
+
+点击管理页面的“扫描网络”后，固件会停止正在进行的 STA 关联、暂停自动重连并保留配置热点，
+然后开始异步扫描。扫描结束后才允许后台重连，避免 ESP32 在“正在连接”状态拒绝扫描。
+
+保存新的 Wi-Fi 后，固件不再重启：会断开旧网络、清除旧的关联状态，并立即以新 SSID 和密码
+发起一次干净的连接。

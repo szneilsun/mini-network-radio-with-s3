@@ -110,6 +110,11 @@ bool accessPointRunning = false;
 bool stationConfigured = false;
 bool wifiCredentialsPresent = false;
 bool wifiScanInProgress = false;
+bool wifiScanPriority = false;
+bool wifiAssociationPending = false;
+uint32_t wifiAssociationStartedAt = 0;
+uint32_t lastWifiRetryAt = 0;
+bool wasStationConnected = false;
 bool mdnsRunning = false;
 void (*onStationSelected)(uint8_t) = nullptr;
 
@@ -621,6 +626,8 @@ bool connectSavedStation() {
   WiFi.mode(accessPointRunning ? WIFI_AP_STA : WIFI_STA);
   WiFi.setAutoReconnect(true);
   WiFi.begin(ssid.c_str(), password.c_str());
+  wifiAssociationPending = true;
+  wifiAssociationStartedAt = millis();
   const uint32_t startedAt = millis();
   while (WiFi.status() != WL_CONNECTED &&
          millis() - startedAt < config::kStationConnectTimeoutMs) {
@@ -628,8 +635,10 @@ bool connectSavedStation() {
   }
   if (WiFi.status() != WL_CONNECTED) {
     WiFi.disconnect(false, false);
+    wifiAssociationPending = false;
     return false;
   }
+  wifiAssociationPending = false;
   stationConfigured = true;
   startMdns();
   return true;
@@ -637,15 +646,20 @@ bool connectSavedStation() {
 
 void handleWifiScan() {
   if (!wifiScanInProgress) {
-    // Scanning requires the station interface.  A device without saved
-    // credentials normally runs in AP-only mode, so preserve the setup AP
-    // while enabling STA before starting the asynchronous scan.
-    if (accessPointRunning && WiFi.getMode() == WIFI_AP) {
-      WiFi.mode(WIFI_AP_STA);
-    }
+    // A user-requested scan takes precedence over association.  ESP32 rejects
+    // scanNetworks() while STA is still connecting, so explicitly stop the
+    // current attempt and suppress automatic reconnect until scan completes.
+    wifiScanPriority = true;
+    wifiAssociationPending = false;
+    WiFi.setAutoReconnect(false);
+    WiFi.disconnect(false, false);
+    delay(100);
+    WiFi.mode(accessPointRunning ? WIFI_AP_STA : WIFI_STA);
     WiFi.scanDelete();
     const int result = WiFi.scanNetworks(true, true);
     if (result == WIFI_SCAN_FAILED) {
+      wifiScanPriority = false;
+      WiFi.setAutoReconnect(true);
       Serial.printf("ERROR: Wi-Fi scan could not start (mode=%d, status=%d).\n",
                     static_cast<int>(WiFi.getMode()), static_cast<int>(WiFi.status()));
       sendJson("{\"error\":\"Wi-Fi scan could not start\"}", 503);
@@ -662,6 +676,9 @@ void handleWifiScan() {
     return;
   }
   wifiScanInProgress = false;
+  wifiScanPriority = false;
+  WiFi.setAutoReconnect(true);
+  lastWifiRetryAt = millis();
   if (count < 0) {
     Serial.printf("ERROR: Wi-Fi scan failed (result=%d, mode=%d, status=%d).\n",
                   count, static_cast<int>(WiFi.getMode()), static_cast<int>(WiFi.status()));
@@ -703,9 +720,25 @@ void handleSaveWifi() {
     sendJson("{\"error\":\"could not save Wi-Fi settings\"}", 500);
     return;
   }
-  sendJson("{\"saved\":true,\"restarting\":true}");
-  delay(300);
-  ESP.restart();
+  // New credentials always start a clean association rather than reusing an
+  // in-progress reconnect that may still target the old network.
+  WiFi.scanDelete();
+  wifiScanInProgress = false;
+  wifiScanPriority = false;
+  wifiAssociationPending = false;
+  WiFi.setAutoReconnect(false);
+  WiFi.disconnect(false, false);
+  delay(100);
+  WiFi.mode(accessPointRunning ? WIFI_AP_STA : WIFI_STA);
+  WiFi.begin(ssid.c_str(), password.c_str());
+  WiFi.setAutoReconnect(true);
+  wifiAssociationPending = true;
+  wifiAssociationStartedAt = millis();
+  wifiCredentialsPresent = true;
+  stationConfigured = true;
+  wasStationConnected = false;
+  lastWifiRetryAt = millis();
+  sendJson("{\"saved\":true,\"connecting\":true}");
 }
 
 void handleForgetWifi() {
@@ -1560,14 +1593,12 @@ char uiTexture[16] = "none";
 char logs[kLogCapacity][120] = {};
 uint8_t logHead = 0;
 uint8_t logCount = 0;
-uint32_t lastWifiRetryAt = 0;
 uint32_t nextPlaybackRetryAt = 0;
 uint8_t playbackFailures = 0;
 bool playbackAwaitingReady = false;
 bool playbackFaultPending = false;
 uint32_t playbackAttemptStartedAt = 0;
 char playbackFaultMessage[96] = {};
-bool wasStationConnected = false;
 bool otaSucceeded = false;
 bool playbackEnabled = true;
 bool stationChangePending = false;
@@ -2015,8 +2046,20 @@ void maintainNetworkAndPlayback() {
       setPlayerMessage("router Wi-Fi disconnected; retrying");
       addLog("wifi", "router Wi-Fi disconnected");
     }
-    // WiFi.reconnect() cancels an active radio scan on ESP32.  Let the scan
-    // finish before scheduling the next association attempt.
+    // Manual scans and freshly saved credentials own the STA interface until
+    // their operation completes.  Do not race them with reconnect().
+    if (wifiScanPriority || wifiScanInProgress) {
+      startAccessPoint();
+      wasStationConnected = false;
+      return;
+    }
+    if (wifiAssociationPending &&
+        millis() - wifiAssociationStartedAt < config::kStationConnectTimeoutMs) {
+      startAccessPoint();
+      wasStationConnected = false;
+      return;
+    }
+    wifiAssociationPending = false;
     if (WiFi.scanComplete() != WIFI_SCAN_RUNNING &&
         millis() - lastWifiRetryAt >= kWifiRetryMs) {
       lastWifiRetryAt = millis();
@@ -2029,6 +2072,7 @@ void maintainNetworkAndPlayback() {
   }
   if (!wasStationConnected) {
     wasStationConnected = true;
+    wifiAssociationPending = false;
     addLog("wifi", "router Wi-Fi connected");
     nextPlaybackRetryAt = millis() + 500;
   }
@@ -2601,7 +2645,7 @@ function clearForm(){q('#editId').value='';q('#stationName').value='';q('#statio
 async function saveStation(){const id=q('#editId').value,body=enc({name:q('#stationName').value,url:q('#stationUrl').value});try{const data=await api(id===''?'/api/stations':'/api/stations/update?id='+encodeURIComponent(id),{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body});applyPlaylist(data);clearForm()}catch(e){alert(e.message)}}
 function removeStation(id){if(confirm('删除该电台？'))post('/api/stations/delete?id='+id)}
 async function scanWifi(){try{let data;for(let attempt=0;attempt<25;attempt++){data=await api('/api/wifi/scan');if(!data.scanning)break;await new Promise(resolve=>setTimeout(resolve,350))}if(!data||data.scanning)throw Error('Wi-Fi 扫描超时');const select=q('#ssid');select.replaceChildren();const empty=document.createElement('option');empty.value='';empty.textContent='选择 Wi-Fi';select.append(empty);(data.networks||[]).forEach(network=>{const option=document.createElement('option');option.value=network.ssid;option.textContent=network.ssid+' ('+network.rssi+' dBm)';select.append(option)})}catch(e){alert(e.message)}}
-async function saveWifi(){try{await api('/api/wifi',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:enc({ssid:q('#ssid').value,password:q('#wifiPassword').value})});q('#status').textContent='Wi-Fi 已保存，设备正在重启…'}catch(e){alert(e.message)}}
+async function saveWifi(){try{await api('/api/wifi',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:enc({ssid:q('#ssid').value,password:q('#wifiPassword').value})});q('#status').textContent='Wi-Fi 已保存，正在使用新凭据连接…'}catch(e){alert(e.message)}}
 async function saveTheme(){try{const data=await api('/api/ui-theme',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:enc({background:q('#background').value,accent:q('#accent').value,texture:q('#texture').value})});q('#background').value=data.background;q('#accent').value=data.accent;q('#texture').value=data.texture;alert('页面外观已保存')}catch(e){alert(e.message)}}
 async function savePassword(){try{await api('/api/security/password',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:enc({password:q('#adminPassword').value})});alert('管理密码已保存；请刷新页面并用 admin 登录。')}catch(e){alert(e.message)}}
 async function uploadFirmware(file){if(!file||!confirm('上传后设备会重启，继续？'))return;const form=new FormData;form.append('firmware',file);try{await api('/api/ota',{method:'POST',body:form});q('#status').textContent='升级完成，设备正在重启…'}catch(e){alert(e.message)}}
