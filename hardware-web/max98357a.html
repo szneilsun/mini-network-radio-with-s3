@@ -1,0 +1,357 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta
+      name="description"
+      content="MAX98357A 单声道 I2S Class-D 功放的规格、引脚、默认模块电路与 ESP32-S3 推荐接线。"
+    >
+    <title>MAX98357A 单声道 I2S 功放｜ESP32-S3 音频硬件指南</title>
+    <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="assets/styles.css">
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">跳到主要内容</a>
+
+    <header class="site-header">
+      <nav class="nav-wrap" aria-label="硬件分类">
+        <a class="brand" href="index.html"><span class="brand-mark" aria-hidden="true">HW</span>硬件资料库</a>
+        <div class="nav-links">
+          <a href="index.html">总览</a>
+          <a href="esp32-s3.html">ESP32-S3</a>
+          <a href="pcm5102a.html">PCM5102A</a>
+          <a href="max98357a.html" aria-current="page">MAX98357A</a>
+          <a href="accessories.html">配件与接线</a>
+        </div>
+      </nav>
+    </header>
+
+    <main id="main-content">
+      <section class="hero" aria-labelledby="page-title">
+        <p class="eyebrow">I2S Mono Class-D Amplifier</p>
+        <h1 id="page-title">MAX98357A</h1>
+        <p class="lede">
+          把数字 I2S 音频直接变成可驱动扬声器的单声道功率输出；内置 DAC 与 Class-D 功放，
+          不需要 MCLK，适合 ESP32-S3 语音提示、小型播放器和联网音箱。
+        </p>
+        <div class="hero-meta" aria-label="核心特性">
+          <span>VDD 2.5–5.5 V</span>
+          <span>最高 3.2 W</span>
+          <span>8–96 kHz</span>
+          <span>16 / 24 / 32 bit</span>
+          <span>无需 MCLK</span>
+        </div>
+      </section>
+
+      <section class="section" aria-labelledby="spec-title">
+        <div class="section-heading">
+          <h2 id="spec-title">先看关键规格</h2>
+          <p>输出功率取决于供电、扬声器阻抗、散热和允许失真；下列功率值对应 5 V、4 Ω 负载。</p>
+        </div>
+        <div class="metric-grid">
+          <article class="metric">
+            <small>供电范围</small>
+            <strong>2.5–5.5 V</strong>
+            <span>逻辑与功放共用 VDD</span>
+          </article>
+          <article class="metric">
+            <small>最大输出（5 V / 4 Ω）</small>
+            <strong>3.2 W</strong>
+            <span>10% THD；追求低失真时不要以此为常态工作点</span>
+          </article>
+          <article class="metric">
+            <small>低失真输出（5 V / 4 Ω）</small>
+            <strong>2.5 W</strong>
+            <span>1% THD，更适合作为实际设计参考</span>
+          </article>
+          <article class="metric">
+            <small>I2S 音频格式</small>
+            <strong>8–96 kHz</strong>
+            <span>支持 16 / 24 / 32 bit，无需 MCLK</span>
+          </article>
+        </div>
+      </section>
+
+      <section class="section" aria-labelledby="flow-title">
+        <div class="section-heading">
+          <h2 id="flow-title">信号怎么走</h2>
+          <p>MAX98357A 接收三线标准 I2S，内部完成数模转换、声道选择和功率放大。</p>
+        </div>
+        <div class="signal-flow" aria-label="ESP32-S3 到扬声器的音频信号路径">
+          <div class="flow-node">
+            <strong>ESP32-S3</strong>
+            <span class="muted">输出 PCM 数字音频</span>
+          </div>
+          <div class="flow-arrow" aria-hidden="true">→</div>
+          <div class="flow-node">
+            <strong>三线 I2S</strong>
+            <span class="muted">BCLK · LRCLK · DIN</span>
+          </div>
+          <div class="flow-arrow" aria-hidden="true">→</div>
+          <div class="flow-node">
+            <strong>MAX98357A</strong>
+            <span class="muted">DAC + 单声道 Class-D</span>
+          </div>
+          <div class="flow-arrow" aria-hidden="true">→</div>
+          <div class="flow-node">
+            <strong>4 Ω 扬声器</strong>
+            <span class="muted">OUT+ / OUT− 差分驱动</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" aria-labelledby="pins-title">
+        <div class="section-heading">
+          <h2 id="pins-title">接口与作用</h2>
+          <p>模块常见排针为 7 个逻辑/电源接口，扬声器另接 OUT+ 与 OUT−。</p>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <caption class="muted">MAX98357A 模块接口速查</caption>
+            <thead>
+              <tr>
+                <th scope="col">接口</th>
+                <th scope="col">类别</th>
+                <th scope="col">用途</th>
+                <th scope="col">本方案建议</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>VDD</code></td>
+                <td>电源</td>
+                <td>2.5–5.5 V 供电</td>
+                <td>用足额、稳定的 5 V 供电</td>
+              </tr>
+              <tr>
+                <td><code>GND</code></td>
+                <td>电源</td>
+                <td>电源与数字信号参考地</td>
+                <td>与 ESP32-S3 电源地共地</td>
+              </tr>
+              <tr>
+                <td><code>SD_MODE</code></td>
+                <td>控制</td>
+                <td>关断与左/右/混合声道选择</td>
+                <td>默认模块约 1 MΩ 上拉时输出 L/2 + R/2</td>
+              </tr>
+              <tr>
+                <td><code>GAIN</code></td>
+                <td>控制</td>
+                <td>设置功放增益</td>
+                <td>悬空为 9 dB</td>
+              </tr>
+              <tr>
+                <td><code>DIN</code></td>
+                <td>I2S</td>
+                <td>串行音频数据输入</td>
+                <td>接 ESP32-S3 GPIO6</td>
+              </tr>
+              <tr>
+                <td><code>BCLK</code></td>
+                <td>I2S</td>
+                <td>位时钟输入</td>
+                <td>接 ESP32-S3 GPIO4</td>
+              </tr>
+              <tr>
+                <td><code>LRCLK</code></td>
+                <td>I2S</td>
+                <td>左右声道时钟，也常标作 LRC / WS</td>
+                <td>接 ESP32-S3 GPIO5</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <aside class="callout danger" aria-label="BTL 输出安全警告">
+          <strong>BTL 输出严禁接地</strong>
+          扬声器必须跨接在 <code>OUT+</code> 与 <code>OUT−</code> 之间。两端都在主动切换，
+          任一端接 GND、示波器接地夹或其他单端音频地，都可能造成短路并损坏模块或测量设备。
+        </aside>
+      </section>
+
+      <section class="section" aria-labelledby="circuit-title">
+        <div class="section-heading">
+          <h2 id="circuit-title">默认模块电路</h2>
+          <p>先识别板上的默认配置，再决定是否需要改动声道、增益或 EMI 滤波。</p>
+        </div>
+        <div class="two-column">
+          <article class="card">
+            <span class="tag">输入与控制</span>
+            <h3>默认混合左右声道</h3>
+            <ul class="clean-list">
+              <li><code>SD_MODE</code> 通过约 1 MΩ 电阻上拉到 VDD，选择 <strong>L/2 + R/2</strong> 混合单声道。</li>
+              <li><code>GAIN</code> 默认悬空，对应 <strong>9 dB</strong> 增益。</li>
+              <li>只需要 DIN、BCLK、LRCLK 三根 I2S 信号线；不需要 MCLK。</li>
+            </ul>
+          </article>
+          <article class="card">
+            <span class="tag blue">电源与输出</span>
+            <h3>去耦与 EMI 处理</h3>
+            <ul class="clean-list">
+              <li>VDD 旁路采用 <strong>10 µF + 0.1 µF</strong>，走线应短并靠近芯片。</li>
+              <li>OUT+、OUT− 各串磁珠，之后各用 <strong>220 pF</strong> 电容抑制高频干扰。</li>
+              <li>滤波网络不改变 BTL 本质：扬声器仍只能跨接两路输出。</li>
+            </ul>
+          </article>
+        </div>
+
+        <figure class="media-frame">
+          <img
+            src="assets/max98357a-schematic.png"
+            alt="MAX98357A 模块原理图，显示 SD_MODE 上拉、GAIN 悬空、电源去耦和 BTL 输出滤波"
+            width="1545"
+            height="1065"
+          >
+          <figcaption>
+            模块原理图：R1 将 SD_MODE 约 1 MΩ 上拉；GAIN 悬空为 9 dB；VDD 使用 10 µF 与 0.1 µF 去耦；
+            两路 BTL 输出均经过磁珠与 220 pF 抑制网络。
+          </figcaption>
+        </figure>
+      </section>
+
+      <section class="section" aria-labelledby="wiring-title">
+        <div class="section-heading">
+          <h2 id="wiring-title">ESP32-S3 推荐接线</h2>
+          <p>以下映射避开旧版 ESP32 示例中的固定脚号，软件中的 I2S 引脚配置必须与实物一致。</p>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <caption class="muted">建议引脚映射与接线检查</caption>
+            <thead>
+              <tr>
+                <th scope="col">MAX98357A</th>
+                <th scope="col">ESP32-S3 / 电源</th>
+                <th scope="col">注意事项</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>BCLK</code></td>
+                <td><code>GPIO4</code></td>
+                <td>位时钟；与代码中的 BCLK 配置一致</td>
+              </tr>
+              <tr>
+                <td><code>LRCLK</code></td>
+                <td><code>GPIO5</code></td>
+                <td>字选择时钟；模块上也可能标为 LRC</td>
+              </tr>
+              <tr>
+                <td><code>DIN</code></td>
+                <td><code>GPIO6</code></td>
+                <td>接 ESP32-S3 的 I2S 数据输出</td>
+              </tr>
+              <tr>
+                <td><code>VDD</code></td>
+                <td>稳定 5 V</td>
+                <td>按扬声器功率留足电流余量；需要额定功率时不要从 3.3 V 引脚取电。若拟从主板 5 V 排针供电，先确认 <code>IN-OUT</code> 焊盘/跳线状态。</td>
+              </tr>
+              <tr>
+                <td><code>GND</code></td>
+                <td>ESP32-S3 GND</td>
+                <td>电源地与控制器共地，回流路径尽量短</td>
+              </tr>
+              <tr>
+                <td><code>OUT+</code> / <code>OUT−</code></td>
+                <td>扬声器 + / −</td>
+                <td>仅跨接扬声器；两端均不得接地</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="callout success">
+          <strong>上电前快速检查</strong>
+          先断电量测 OUT+、OUT− 是否误接地，再确认 5 V 极性、主板 <code>IN-OUT</code> 状态、公共地和 GPIO4 / 5 / 6 的配置；
+          首次播放从较低数字音量开始。
+        </div>
+      </section>
+
+      <section class="section" aria-labelledby="legacy-title">
+        <div class="section-heading">
+          <h2 id="legacy-title">旧接线资料：只用于对照</h2>
+          <p>这张图针对早期经典 ESP32 板卡与旧软件示例，不是本项目的 ESP32-S3 接线依据。</p>
+        </div>
+
+        <aside class="callout danger">
+          <strong>不能照抄旧图</strong>
+          图中的 GPIO22 / 25 / 26 不适用于这里的 ESP32-S3 方案；请采用 GPIO4 / 5 / 6 的推荐映射，
+          并以所用开发板的实际引脚占用为准。
+        </aside>
+
+        <figure class="media-frame">
+          <img
+            src="assets/max98357a-legacy-wiring.jpg"
+            alt="旧版 ESP32、MAX98357A 和 TF 卡接线示例，标有 GPIO22、GPIO25 与 GPIO26，仅供历史对照"
+            width="1101"
+            height="649"
+          >
+          <figcaption>
+            旧接线图，仅用于识别历史示例中的信号名称与差异，不能照抄到 ESP32-S3。
+          </figcaption>
+        </figure>
+
+        <div class="two-column">
+          <article class="card">
+            <span class="tag red">硬件风险</span>
+            <h3>旧 GPIO 映射不适用</h3>
+            <p>
+              旧图使用 GPIO22（LRC）、GPIO25（DIN）、GPIO26（BCLK）。ESP32-S3 的封装、开发板引出与占用情况不同；
+              本方案改为 BCLK 4、LRCLK 5、DIN 6。
+            </p>
+          </article>
+          <article class="card">
+            <span class="tag amber">时钟冲突</span>
+            <h3>20 kHz 与 44.1 kHz 必须统一</h3>
+            <p>
+              旧示例代码若写 <code>20000</code>，而 README 声称 44.1 kHz，两者相互冲突。
+              播放源采样率与 I2S 配置不一致会导致音高、速度或数据解释异常，应统一为音频文件的真实采样率。
+            </p>
+          </article>
+        </div>
+
+        <aside class="callout warning">
+          <strong>Arduino Core 3.3.11 兼容性提示</strong>
+          旧示例常基于早期 I2S API；在 Arduino-ESP32 Core 3.3.11 上存在编译或运行行为不兼容的风险。
+          不要直接复制旧初始化代码：应使用当前 Core 对应的 I2S 接口，重新核对引脚、标准 I2S 模式、位宽、声道槽和采样率。
+        </aside>
+      </section>
+
+      <section class="section" aria-labelledby="check-title">
+        <div class="section-heading">
+          <h2 id="check-title">无声或失真时</h2>
+          <p>按信号链从电源到格式逐项排查，通常比反复更换示例代码更快。</p>
+        </div>
+        <div class="card-grid">
+          <article class="card">
+            <span class="tag">01 · 供电</span>
+            <h3>测量模块端 5 V</h3>
+            <p>播放大音量时观察 VDD 是否明显跌落，并确认 ESP32-S3 与功放共地。</p>
+          </article>
+          <article class="card">
+            <span class="tag blue">02 · 时钟</span>
+            <h3>确认 BCLK 与 LRCLK</h3>
+            <p>GPIO4 应输出位时钟，GPIO5 的频率应等于实际采样率。</p>
+          </article>
+          <article class="card">
+            <span class="tag amber">03 · 格式</span>
+            <h3>统一采样率与位宽</h3>
+            <p>音源、I2S 配置和写入数据的 16 / 24 / 32 bit 对齐方式必须一致。</p>
+          </article>
+          <article class="card">
+            <span class="tag red">04 · 输出</span>
+            <h3>检查 BTL 接法</h3>
+            <p>扬声器只接 OUT+ / OUT−，不要把负端当成 GND，也不要并接耳机或单端输入。</p>
+          </article>
+        </div>
+      </section>
+    </main>
+
+    <footer class="page-footer">
+      <div class="footer-inner">
+        <span>ESP32-S3 音频硬件指南 · MAX98357A</span>
+        <span>离线资料页 · 接线前请断电复核</span>
+      </div>
+    </footer>
+  </body>
+</html>

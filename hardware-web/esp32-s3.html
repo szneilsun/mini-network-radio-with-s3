@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta
+      name="description"
+      content="ESP32-S3-WROOM-1-N16R8 开发板的实板配置、接口、引脚占用、供电、下载方式与 Arduino 建议设置。"
+    >
+    <title>ESP32-S3 N16R8 开发板｜硬件资料库</title>
+    <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="assets/styles.css">
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">跳到主要内容</a>
+
+    <header class="site-header">
+      <nav class="nav-wrap" aria-label="硬件分类">
+        <a class="brand" href="index.html"><span class="brand-mark" aria-hidden="true">HW</span>硬件资料库</a>
+        <div class="nav-links">
+          <a href="index.html">总览</a>
+          <a href="esp32-s3.html" aria-current="page">ESP32-S3</a>
+          <a href="pcm5102a.html">PCM5102A</a>
+          <a href="max98357a.html">MAX98357A</a>
+          <a href="accessories.html">配件与接线</a>
+        </div>
+      </nav>
+    </header>
+
+    <main id="main-content">
+      <section class="hero" aria-labelledby="page-title">
+        <p class="eyebrow">Confirmed development board</p>
+        <h1 id="page-title">ESP32-S3<br>WROOM-1-N16R8</h1>
+        <p class="lede">当前资料中的主板采用 ESP32-S3-WROOM-1-N16R8 模组：16 MB Quad Flash、8 MB OPI PSRAM、双 USB-C 与 2 × 22 排针。页面将“原理图/实测结果”和“芯片通用能力”明确分开。</p>
+        <div class="hero-meta" aria-label="主板核心配置">
+          <span>双核 LX7 · 最高 240 MHz</span>
+          <span>16 MB Flash + 8 MB PSRAM</span>
+          <span>Wi‑Fi 2.4 GHz + BLE</span>
+          <span>2 × USB-C</span>
+        </div>
+      </section>
+
+      <section class="section" aria-labelledby="facts-title">
+        <div class="section-heading">
+          <div>
+            <p class="kicker">Board facts</p>
+            <h2 id="facts-title">已确认的实板配置</h2>
+          </div>
+          <p>模组型号来自原理图；Flash、PSRAM、芯片修订版和串口链路另有只读检测记录佐证。</p>
+        </div>
+        <div class="metric-grid">
+          <article class="metric"><small>主控与模组</small><strong>ESP32-S3</strong><span>WROOM-1-N16R8 · QFN56 · rev v0.2</span></article>
+          <article class="metric"><small>程序存储</small><strong>16 MB</strong><span>3.3 V Quad SPI Flash</span></article>
+          <article class="metric"><small>扩展内存</small><strong>8 MB</strong><span>内封装 OPI PSRAM</span></article>
+          <article class="metric"><small>调试串口</small><strong>CH340C</strong><span>UART0 · 115200 日志 · 460800 上传</span></article>
+        </div>
+        <div class="two-column" style="margin-top:18px">
+          <aside class="callout success">
+            <strong>本次只读检测</strong>
+            <span>芯片为 ESP32-S3；Flash 为 16 MB，PSRAM 为 8 MB。查询过程没有擦除或烧录 Flash，查询后原有应用恢复运行。</span>
+          </aside>
+          <aside class="callout warning">
+            <strong>不要把运行余量当作芯片容量</strong>
+            <span>日志中的约 170–178 KB 空闲 SRAM 是当前应用的运行时余量，不等同于 512 KB 片上 SRAM，也不包含 8 MB PSRAM。</span>
+          </aside>
+        </div>
+      </section>
+
+      <section class="section" aria-labelledby="interface-title">
+        <div class="section-heading">
+          <div>
+            <p class="kicker">On-board connections</p>
+            <h2 id="interface-title">板载接口、按键与指示灯</h2>
+          </div>
+          <p>两只 USB-C 的用途不同。保留原生 USB 或下载通道时，应避开其对应 GPIO。</p>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <caption class="muted">原理图确认的主要板载连接</caption>
+            <thead>
+              <tr><th scope="col">部件</th><th scope="col">连接</th><th scope="col">用途与注意事项</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>USB-OTG USB-C</td><td><code>GPIO20</code> = D+；<code>GPIO19</code> = D−</td><td>ESP32-S3 原生 USB 2.0 Full-Speed 信号。若使用原生 USB，勿再把 GPIO19/20 分配给普通外设。</td></tr>
+              <tr><td>USB-ISP USB-C</td><td>CH340C → <code>U0RXD / GPIO44</code>、<code>U0TXD / GPIO43</code></td><td>用于 UART0 下载和日志；DTR/RTS 经自动下载电路控制复位/Boot。</td></tr>
+              <tr><td>RST 按键</td><td><code>CHIP_PU / EN</code></td><td>复位主芯片。</td></tr>
+              <tr><td>BOOT 按键</td><td><code>GPIO0</code></td><td>启动配置脚；下载时按住可进入下载模式，不建议作为普通信号长期占用。</td></tr>
+              <tr><td>RGB LED</td><td><code>GPIO48</code></td><td>板载 WS2812B 数据输入；若需要板载彩灯，保留该脚。</td></tr>
+              <tr><td>串口指示灯</td><td><code>U0RXD</code>、<code>U0TXD</code></td><td>两只 LED 分别接 UART0 收发线；高频串口活动时会闪烁。</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="section" aria-labelledby="pin-title">
+        <div class="section-heading">
+          <div>
+            <p class="kicker">Pin planning</p>
+            <h2 id="pin-title">引脚规划：先避开这些占用</h2>
+          </div>
+          <p>ESP32-S3 GPIO 矩阵很灵活，但模组存储、USB、下载与启动配置已经限定了若干脚位。</p>
+        </div>
+        <div class="two-column">
+          <article class="card">
+            <span class="tag red">建议避开</span>
+            <h3>高风险或已有板载用途</h3>
+            <ul class="clean-list">
+              <li><code>GPIO35–37</code>：N16R8 的外部 Flash / OPI PSRAM 总线相关脚，即使引出也不要作为项目外设。</li>
+              <li><code>GPIO19 / 20</code>：原生 USB D− / D+；保留 USB OTG 时不复用。</li>
+              <li><code>GPIO43 / 44</code>：UART0 下载与日志；复用会影响 CH340C 串口。</li>
+              <li><code>GPIO0 / 3 / 45 / 46</code>：启动配置、JTAG/输入限制等敏感用途，除非已验证启动行为，否则不作为首选。</li>
+              <li><code>GPIO48</code>：板载 RGB LED 数据线；要使用灯效时保留。</li>
+            </ul>
+          </article>
+          <article class="card">
+            <span class="tag blue">推荐起点</span>
+            <h3>本项目的低冲突分配</h3>
+            <ul class="clean-list">
+              <li>音频 I²S：<code>BCLK=GPIO4</code>、<code>LRCLK=GPIO5</code>、<code>DATA OUT=GPIO6</code>、<code>DATA IN=GPIO7</code>。</li>
+              <li>microSD SPI：<code>CS=GPIO10</code>、<code>MOSI=GPIO11</code>、<code>SCK=GPIO12</code>、<code>MISO=GPIO13</code>。</li>
+              <li>其余可按项目从 <code>GPIO1/2</code>、<code>GPIO8–18</code>、<code>GPIO21</code> 等已引出、无明显板载冲突的脚中选择。</li>
+              <li>改线后必须同步修改固件的 GPIO 映射；“芯片支持”不等于“该板可随意使用”。</li>
+            </ul>
+          </article>
+        </div>
+        <aside class="callout warning">
+          <strong>关于 GPIO26–34</strong>
+          <span>这些脚没有出现在本板两排排针中；同时，带外部 Flash/PSRAM 的模组内部还存在存储总线占用。优先选择已引出并在上表中标注为低冲突的脚位。</span>
+        </aside>
+      </section>
+
+      <section class="section" aria-labelledby="pinout-title">
+        <div class="section-heading">
+          <div>
+            <p class="kicker">Reference image</p>
+            <h2 id="pinout-title">排针与复用功能图</h2>
+          </div>
+          <p>此图用于识别排针位置和芯片功能。颜色表示芯片可复用能力，不表示每个功能都适合当前项目同时启用。</p>
+        </div>
+        <figure class="media-frame">
+          <img src="assets/esp32-s3-pinout.jpg" alt="ESP32-S3 N16R8 开发板正面及两侧排针引脚功能图" width="2400" height="1701">
+          <figcaption>排针参考图：左侧可见 GPIO4–18、GPIO3、GPIO46、GPIO9–14，右侧可见 GPIO1/2、GPIO35–45、GPIO47/48、GPIO19/20 等。实际项目还须遵守本页的板载占用与启动限制。</figcaption>
+        </figure>
+      </section>
+
+      <section class="section" aria-labelledby="power-title">
+        <div class="section-heading">
+          <div>
+            <p class="kicker">Power &amp; dimensions</p>
+            <h2 id="power-title">供电、尺寸与安装边界</h2>
+          </div>
+          <p>原理图可确认 5 V 到 3.3 V 的板载转换与双 USB 的二极管隔离，但稳压器的具体型号未标明。</p>
+        </div>
+        <div class="two-column">
+          <article class="card">
+            <span class="tag amber">供电</span>
+            <h3>接电前先确认焊盘状态</h3>
+            <ul class="clean-list">
+              <li>USB-OTG 与 USB-ISP 的 VBUS 分别经过肖特基二极管汇入板上 5 V 网络，避免两个 USB 口直接互相回灌。</li>
+              <li>板载稳压器把 5 V 转为 3.3 V；具体稳压器型号和可持续外供电流，现有图纸不能确认。</li>
+              <li><code>IN-OUT</code> 焊盘/跳线会影响 5 V 排针的输入或输出关系。外接功放、传感器前，请先用万用表验证实际状态。</li>
+              <li>大功率外设（例如 MAX98357A + 扬声器）应使用独立、足额的 5 V 电源，并与主板共地。</li>
+            </ul>
+          </article>
+          <article class="card">
+            <span class="tag">尺寸</span>
+            <h3>安装参考</h3>
+            <ul class="clean-list">
+              <li>主体板长约 <strong>57.15 mm</strong>，宽约 <strong>27.94 mm</strong>。</li>
+              <li>天线端的最大长度标注约 <strong>63.61 mm</strong>；排针区域高度标注约 <strong>25.40 mm</strong>。</li>
+              <li>天线附近请避免大面积金属、接地铜皮和高电流线束，以免削弱 Wi‑Fi / BLE 信号。</li>
+            </ul>
+          </article>
+        </div>
+        <figure class="media-frame">
+          <img src="assets/esp32-s3-dimensions.png" alt="ESP32-S3 N16R8 开发板外形尺寸图，标示 57.15、63.61、27.94 和 25.40 毫米" width="938" height="596">
+          <figcaption>尺寸图仅作机械设计和外壳预留参考；量产装配前应以实物卡尺复核 USB-C、排针和天线边界。</figcaption>
+        </figure>
+      </section>
+
+      <section class="section" aria-labelledby="software-title">
+        <div class="section-heading">
+          <div>
+            <p class="kicker">Bring-up</p>
+            <h2 id="software-title">Arduino / 上传建议</h2>
+          </div>
+          <p>以下是针对已检测到的 16 MB Quad Flash + 8 MB OPI PSRAM 的推荐起点，不是唯一可用的应用分区方案。</p>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <caption class="muted">推荐开发环境配置</caption>
+            <thead>
+              <tr><th scope="col">菜单项</th><th scope="col">建议值</th><th scope="col">原因</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>Board</td><td><code>ESP32S3 Dev Module</code></td><td>与当前检测到的 ESP32-S3 最匹配。</td></tr>
+              <tr><td>Flash Mode / Size</td><td><code>QIO 80MHz</code> / <code>16MB (128Mb)</code></td><td>本板是 Quad Flash，而非 Octal Flash。</td></tr>
+              <tr><td>PSRAM</td><td><code>OPI PSRAM</code></td><td>启用实测到的 8 MB 内封装 Octal PSRAM。</td></tr>
+              <tr><td>Partition Scheme</td><td><code>16M Flash (3MB APP/9.9MB FATFS)</code></td><td>适合需 OTA 与文件存储的通用项目；数据布局变更前应备份。</td></tr>
+              <tr><td>Upload Mode / Speed</td><td><code>UART0</code> / <code>460800</code></td><td>CH340C 在 460800 已验证稳定；921600 在该链路上曾复现失败，必要时降至 115200。</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <aside class="callout danger">
+          <strong>不要选择 WROOM2 Octal Flash 配置</strong>
+          <span>本板的组合是 <strong>Quad Flash + Octal PSRAM</strong>。Flash 与 PSRAM 的总线模式不是同一个概念，选错为 Octal Flash 会造成启动或烧录问题。</span>
+        </aside>
+      </section>
+
+      <section class="section" aria-labelledby="schematic-title">
+        <div class="section-heading">
+          <div>
+            <p class="kicker">Schematic evidence</p>
+            <h2 id="schematic-title">原理图中的已确认连接</h2>
+          </div>
+          <p>可放大查看模组型号、双 USB-C、CH340C、自动下载电路、WS2812B、按键与排针网络名称。</p>
+        </div>
+        <figure class="media-frame">
+          <img src="assets/esp32-s3-schematic.png" alt="ESP32-S3-WROOM-1-N16R8 开发板原理图，显示双 USB-C、CH340C、自动下载电路、LED、WS2812B、电源和两排排针" width="1769" height="1251">
+          <figcaption>原理图摘自当前资料：U3 为 ESP32-S3-WROOM-1-N16R8，U2 为 CH340C，原生 USB 对应 GPIO19/20，RGB LED 对应 GPIO48。</figcaption>
+        </figure>
+      </section>
+
+      <section class="section" aria-labelledby="capability-title">
+        <div class="section-heading">
+          <div>
+            <p class="kicker">Chip capability</p>
+            <h2 id="capability-title">芯片能力与项目边界</h2>
+          </div>
+          <p>以下来自 ESP32-S3 芯片资料，属于平台能力；并不保证全部接口均已被本开发板引出或适合同时使用。</p>
+        </div>
+        <div class="card-grid">
+          <article class="card"><span class="tag blue">无线</span><h3>Wi‑Fi + BLE</h3><p>支持 2.4 GHz 802.11 b/g/n、Bluetooth 5 LE 与 BLE Mesh；<strong>不支持 Bluetooth Classic / A2DP</strong>。</p></article>
+          <article class="card"><span class="tag">计算</span><h3>双核与向量指令</h3><p>双核 Xtensa LX7，最高 240 MHz；可用于 DSP、音频和轻量级边缘 AI 加速，但没有独立 NPU。</p></article>
+          <article class="card"><span class="tag amber">外设</span><h3>I²S / SPI / USB</h3><p>提供 2 路 I²S、SPI、SD/MMC、USB OTG、UART、I²C、ADC、PWM、RMT、TWAI 等能力。</p></article>
+          <article class="card"><span class="tag red">安全</span><h3>需由固件启用</h3><p>芯片支持 Secure Boot v2 与 Flash Encryption；当前只读检测显示这两项均未启用。</p></article>
+        </div>
+      </section>
+
+      <section class="section" aria-labelledby="sources-title">
+        <div class="section-heading"><div><p class="kicker">Local sources</p><h2 id="sources-title">本页依据</h2></div></div>
+        <ul class="source-list">
+          <li><code>ESP32-S3/1778810837723945.pdf</code>：开发板原理图与板卡资料。</li>
+          <li><code>ESP32-S3/芯路城.pdf</code>：ESP32-S3 芯片功能资料。</li>
+          <li><code>ESP32-S3/1783913303242785.pdf</code>：开发板排针与尺寸资料。</li>
+          <li><code>ESP32-S3_电路板信息.md</code>：USB 串口日志与 esptool 只读检测记录。</li>
+        </ul>
+      </section>
+    </main>
+
+    <footer class="page-footer">
+      <div class="footer-inner"><span>硬件资料库 · ESP32-S3 N16R8</span><a href="index.html">返回总览</a></div>
+    </footer>
+  </body>
+</html>

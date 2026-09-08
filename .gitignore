@@ -4,6 +4,8 @@
 # Arduino build outputs and release images are reproducible from source.
 build/
 **/build/
+binaries/
+**/binaries/
 *.bin
 *.elf
 *.map
@@ -17,3 +19,7 @@ file_opts
 build.options.json
 build_opt.h
 flash_args
+
+# Arduino CLI and editor metadata.
+.arduino/
+.vscode/

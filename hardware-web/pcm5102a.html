@@ -1,0 +1,374 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta
+      name="description"
+      content="GY-PCM5102 与 ESP32-S3 的离线接线参考：PCM5102A 规格、I2S 信号、电源与接地、GPIO 建议及 btAudio 兼容性说明。"
+    >
+    <title>GY-PCM5102 接线与规格｜ESP32-S3 硬件参考</title>
+    <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="assets/styles.css">
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">跳到主要内容</a>
+
+    <header class="site-header">
+      <nav class="nav-wrap" aria-label="硬件分类">
+        <a class="brand" href="index.html"><span class="brand-mark" aria-hidden="true">HW</span>硬件资料库</a>
+        <div class="nav-links">
+          <a href="index.html">总览</a>
+          <a href="esp32-s3.html">ESP32-S3</a>
+          <a href="pcm5102a.html" aria-current="page">PCM5102A</a>
+          <a href="max98357a.html">MAX98357A</a>
+          <a href="accessories.html">配件与接线</a>
+        </div>
+      </nav>
+    </header>
+
+    <main id="main-content">
+      <section class="hero" aria-labelledby="page-title">
+        <p class="eyebrow">Stereo line-level DAC</p>
+        <h1 id="page-title">GY-PCM5102：把 I2S 变成立体声线路输出</h1>
+        <p class="lede">
+          PCM5102A 是两声道音频 DAC，不是功率放大器。它适合连接有源音箱、功放或其他线路输入设备，不能直接推动无源扬声器。
+        </p>
+        <div class="hero-meta" aria-label="关键特性">
+          <span>2.1 Vrms 线路输出</span>
+          <span>8–384 kHz</span>
+          <span>16 / 24 / 32 bit</span>
+          <span>三线 I2S 可用</span>
+        </div>
+      </section>
+
+      <section class="section" aria-labelledby="quick-facts">
+        <div class="section-heading">
+          <div>
+            <p class="kicker">核心结论</p>
+            <h2 id="quick-facts">先确认它是不是你要的器件</h2>
+          </div>
+          <p>以下参数来自 TI PCM510xA 芯片级资料；成品模块的接口、电源处理和外围元件仍以实物为准。</p>
+        </div>
+
+        <div class="metric-grid">
+          <article class="metric">
+            <small>满幅输出</small>
+            <strong>2.1 Vrms</strong>
+            <span class="muted">立体声线路级模拟信号</span>
+          </article>
+          <article class="metric">
+            <small>动态范围 / SNR</small>
+            <strong>112 dB</strong>
+            <span class="muted">芯片典型性能指标</span>
+          </article>
+          <article class="metric">
+            <small>总谐波失真</small>
+            <strong>约 −93 dB</strong>
+            <span class="muted">实际表现受供电与布局影响</span>
+          </article>
+          <article class="metric">
+            <small>建议输出负载</small>
+            <strong>≥ 1 kΩ</strong>
+            <span class="muted">接线路输入，不接喇叭</span>
+          </article>
+        </div>
+
+        <aside class="callout danger" aria-label="重要警告">
+          <strong>PCM5102A 不是功放</strong>
+          <span>
+            <code>LOUT</code> 与 <code>ROUT</code> 只能送往高阻线路输入或后级功放。直接接 4 Ω / 8 Ω 无源扬声器会过载，音量和音质也无法保证。
+          </span>
+        </aside>
+      </section>
+
+      <section class="section" aria-labelledby="source-boundary">
+        <div class="section-heading">
+          <div>
+            <p class="kicker">资料边界</p>
+            <h2 id="source-boundary">现有资料不能证明模块级接法</h2>
+          </div>
+          <p>“芯片能这样连接”不等于“这块 GY-PCM5102 板已经这样连接”。</p>
+        </div>
+
+        <div class="two-column">
+          <article class="card">
+            <span class="tag blue">已有</span>
+            <h3>芯片手册</h3>
+            <p>TI PCM510xA 数据手册给出了芯片性能、电源域、数字音频格式和引脚功能，可作为电气边界的依据。</p>
+          </article>
+          <article class="card">
+            <span class="tag amber">缺失</span>
+            <h3>模块原理图</h3>
+            <p>资料中没有 GY-PCM5102 模块级原理图，无法仅凭芯片手册确认板上稳压、跳线、上拉和丝印引脚的实际连接。</p>
+          </article>
+        </div>
+
+        <aside class="callout warning">
+          <strong>上电前以实物为准</strong>
+          <span>
+            核对模块正反面丝印、卖家版本说明和万用表连通性。尤其不要把名为 <code>VIN</code>、<code>VCC</code> 或 <code>3V3</code> 的模块引脚直接等同于芯片的某个电源脚。
+          </span>
+        </aside>
+
+        <aside class="callout danger">
+          <strong>附带 btAudio 库不适用于 ESP32-S3 的蓝牙音频路径</strong>
+          <span>
+            这份旧库依赖经典蓝牙 A2DP，而 ESP32-S3 只有 Bluetooth LE，不支持经典蓝牙 A2DP。旧示例里的 <code>GPIO25</code> / <code>GPIO26</code> / <code>GPIO27</code> 接线也不是本项目的 S3 引脚方案，请勿照搬。若音源来自网络、存储或其他 BLE 应用，应另选适用于 S3 的音频数据路径和 I2S 驱动。
+          </span>
+        </aside>
+      </section>
+
+      <section class="section" aria-labelledby="audio-format">
+        <div class="section-heading">
+          <div>
+            <p class="kicker">数字音频</p>
+            <h2 id="audio-format">I2S 三线即可工作</h2>
+          </div>
+          <p>PCM5102A 支持标准 I2S 与左对齐格式；内部 PLL 可由位时钟恢复系统时钟，因此常规连接可以省略 MCLK。</p>
+        </div>
+
+        <div class="signal-flow" aria-label="音频信号流">
+          <div class="flow-node">
+            <strong>ESP32-S3</strong>
+            <span class="muted">生成 PCM 音频</span>
+          </div>
+          <div class="flow-arrow" aria-hidden="true">→</div>
+          <div class="flow-node">
+            <strong>BCK · LRCK · DIN</strong>
+            <span class="muted">三线数字音频</span>
+          </div>
+          <div class="flow-arrow" aria-hidden="true">→</div>
+          <div class="flow-node">
+            <strong>PCM5102A</strong>
+            <span class="muted">内部 PLL 与 D/A 转换</span>
+          </div>
+          <div class="flow-arrow" aria-hidden="true">→</div>
+          <div class="flow-node">
+            <strong>线路输入 / 后级功放</strong>
+            <span class="muted">左、右声道模拟输出</span>
+          </div>
+        </div>
+
+        <div class="card-grid" style="margin-top: 18px;">
+          <article class="card">
+            <span class="tag">格式</span>
+            <h3>I2S / 左对齐</h3>
+            <p>发送端格式必须与模块的 <code>FMT</code> 配置一致，否则常见现象是无声、失真或左右声道数据错位。</p>
+          </article>
+          <article class="card">
+            <span class="tag blue">字长</span>
+            <h3>16 / 24 / 32 bit</h3>
+            <p>同时检查软件里的采样位宽、声道数和帧宽设置，不能只改一个参数。</p>
+          </article>
+          <article class="card">
+            <span class="tag amber">采样率</span>
+            <h3>8–384 kHz</h3>
+            <p>这是芯片支持范围；最终可用组合仍取决于 S3 的 I2S 时钟配置与音源格式。</p>
+          </article>
+          <article class="card">
+            <span class="tag">时钟</span>
+            <h3>MCLK 可省略</h3>
+            <p>使用内部 PLL 时，以 <code>BCK</code> 和 <code>LRCK</code> 工作，不需要额外连接 <code>SCK/MCLK</code>。</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="section" aria-labelledby="signals">
+        <div class="section-heading">
+          <div>
+            <p class="kicker">引脚速查</p>
+            <h2 id="signals">主要信号与建议映射</h2>
+          </div>
+          <p>不同批次模块可能使用不同缩写；下表列的是常见名称与芯片功能，不代表模块内部连线已经确认。</p>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <caption class="muted">PCM5102A 常见模块标注与建议连接</caption>
+            <thead>
+              <tr>
+                <th scope="col">常见标注</th>
+                <th scope="col">方向</th>
+                <th scope="col">作用</th>
+                <th scope="col">连接建议</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>BCK</code> / <code>BCLK</code></td>
+                <td>S3 → DAC</td>
+                <td>I2S 位时钟</td>
+                <td>建议接 ESP32-S3 <code>GPIO4</code></td>
+              </tr>
+              <tr>
+                <td><code>LCK</code> / <code>LRCK</code> / <code>WSEL</code></td>
+                <td>S3 → DAC</td>
+                <td>左右声道帧时钟</td>
+                <td>建议接 ESP32-S3 <code>GPIO5</code></td>
+              </tr>
+              <tr>
+                <td><code>DIN</code></td>
+                <td>S3 → DAC</td>
+                <td>串行音频数据输入</td>
+                <td>建议接 ESP32-S3 <code>GPIO6</code></td>
+              </tr>
+              <tr>
+                <td><code>SCK</code> / <code>MCLK</code></td>
+                <td>S3 → DAC</td>
+                <td>外部主时钟，可选</td>
+                <td>使用内部 PLL 的三线方案时不连接</td>
+              </tr>
+              <tr>
+                <td><code>FMT</code></td>
+                <td>配置</td>
+                <td>选择 I2S 或左对齐数据格式</td>
+                <td>确认模块默认电平与软件格式一致</td>
+              </tr>
+              <tr>
+                <td><code>XSMT</code> / <code>XMT</code></td>
+                <td>配置</td>
+                <td>静音控制</td>
+                <td>确认板上是否已有上拉，低电平会进入静音</td>
+              </tr>
+              <tr>
+                <td><code>FLT</code>、<code>DMP</code> / <code>DEMP</code></td>
+                <td>配置</td>
+                <td>数字滤波与去加重相关选择</td>
+                <td>一般保留模块默认设置，除非已核实版本和需求</td>
+              </tr>
+              <tr>
+                <td><code>LOUT</code>、<code>ROUT</code></td>
+                <td>DAC → 后级</td>
+                <td>左、右线路级模拟输出</td>
+                <td>接 ≥ 1 kΩ 的线路输入或后级功放</td>
+              </tr>
+              <tr>
+                <td><code>GND</code></td>
+                <td>公共参考</td>
+                <td>数字与模拟信号参考地</td>
+                <td>与 ESP32-S3 及后级设备共地</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <aside class="callout success">
+          <strong>本项目的 S3 建议映射</strong>
+          <span class="pin-run">BCLK = GPIO4 · LRCLK = GPIO5 · DIN = GPIO6 · MCLK = 不连接</span>
+          <span>
+            这只是便于本项目统一的软件与接线建议，不是 PCM5102A 的固定引脚要求。ESP32-S3 的 GPIO 矩阵允许改用其他合适引脚；改动后须同步修改固件，并核对具体开发板的占用情况。
+          </span>
+        </aside>
+      </section>
+
+      <section class="section" aria-labelledby="power">
+        <div class="section-heading">
+          <div>
+            <p class="kicker">供电与布局</p>
+            <h2 id="power">电源正确，底噪才有机会低</h2>
+          </div>
+          <p>下列电压是 PCM5102A 芯片电源域要求；模块的外部供电入口仍需先确认板上电路。</p>
+        </div>
+
+        <div class="two-column">
+          <article class="card">
+            <span class="tag blue">电源域</span>
+            <h3>芯片电压</h3>
+            <ul class="clean-list">
+              <li><code>AVDD</code>：3.3 V 模拟电源。</li>
+              <li><code>CPVDD</code>：3.3 V 电荷泵电源。</li>
+              <li><code>DVDD</code>：可使用 1.8 V 或 3.3 V 数字电源。</li>
+              <li>各电源脚应就近放置去耦；不要根据模块名称猜测稳压结构。</li>
+            </ul>
+          </article>
+          <article class="card">
+            <span class="tag amber">接地</span>
+            <h3>减少噪声与串扰</h3>
+            <ul class="clean-list">
+              <li>S3、DAC 和后级设备必须有可靠的公共地参考。</li>
+              <li>模拟输出线尽量短，远离天线、开关电源、电机和高电流扬声器回路。</li>
+              <li>数字时钟线短而直接，避免与 <code>LOUT</code> / <code>ROUT</code> 长距离平行。</li>
+              <li>先低音量上电；出现爆音、底噪或削波时先检查供电、地线和负载。</li>
+            </ul>
+          </article>
+        </div>
+      </section>
+
+      <section class="section" aria-labelledby="comparison">
+        <div class="section-heading">
+          <div>
+            <p class="kicker">器件选择</p>
+            <h2 id="comparison">PCM5102A 与 MAX98357A 不可互换</h2>
+          </div>
+          <p>两者都接收数字音频，但模拟端的用途完全不同。</p>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <caption class="muted">PCM5102A 与 MAX98357A 的输出用途比较</caption>
+            <thead>
+              <tr>
+                <th scope="col">比较项</th>
+                <th scope="col">PCM5102A</th>
+                <th scope="col">MAX98357A</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>器件定位</td>
+                <td>立体声音频 DAC</td>
+                <td>单声道 D 类数字输入功放</td>
+              </tr>
+              <tr>
+                <td>模拟输出</td>
+                <td>左、右线路级输出，约 2.1 Vrms</td>
+                <td>桥接扬声器功率输出</td>
+              </tr>
+              <tr>
+                <td>直接连接无源喇叭</td>
+                <td><strong>不可以</strong>，需要后级功放</td>
+                <td>可以，在模块额定电源、负载与散热范围内使用</td>
+              </tr>
+              <tr>
+                <td>声道</td>
+                <td>双声道立体声</td>
+                <td>单声道；立体声通常需要两路器件</td>
+              </tr>
+              <tr>
+                <td>适合场景</td>
+                <td>有源音箱、耳放/功放输入、录音或线路输出</td>
+                <td>直接驱动小型扬声器的语音提示或单声道播放</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="section" aria-labelledby="bring-up">
+        <div class="section-heading">
+          <div>
+            <p class="kicker">首次上电</p>
+            <h2 id="bring-up">五步排查清单</h2>
+          </div>
+          <p>先建立最小三线链路，再逐项增加音源、后级和功能配置。</p>
+        </div>
+
+        <ol class="clean-list">
+          <li>断电状态下确认模块版本、供电入口、地线和模拟输出端，不能用缺失的模块原理图作假设。</li>
+          <li>连接公共地，以及 <code>BCK</code>、<code>LRCK</code>、<code>DIN</code>；内部 PLL 方案不接 <code>MCLK</code>。</li>
+          <li>让固件的 I2S / 左对齐格式、采样率、位宽与 <code>FMT</code> 等硬件配置一致。</li>
+          <li>将 <code>LOUT</code> / <code>ROUT</code> 接到高阻线路输入或后级功放，并从低音量测试。</li>
+          <li>无声时依次检查静音脚、时钟、数据格式和公共地；不要改用旧 btAudio 的 A2DP 示例来验证 S3。</li>
+        </ol>
+      </section>
+    </main>
+
+    <footer class="page-footer">
+      <div class="footer-inner">
+        <span>GY-PCM5102 / PCM5102A 离线硬件参考</span>
+        <span>资料依据：TI PCM510xA 芯片手册与旧 btAudio 库；无模块级原理图</span>
+      </div>
+    </footer>
+  </body>
+</html>

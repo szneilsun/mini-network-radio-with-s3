@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="ESP32-S3 N16R8 开发板及 PCM5102A、MAX98357A 音频模块硬件资料总览。">
+  <title>硬件资料总览｜ESP32-S3 N16R8</title>
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="assets/styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#content">跳到正文</a>
+  <header class="site-header">
+    <div class="nav-wrap">
+      <a class="brand" href="index.html"><span class="brand-mark" aria-hidden="true">HW</span>硬件资料库</a>
+      <nav class="nav-links" aria-label="硬件分类">
+        <a href="index.html" aria-current="page">总览</a>
+        <a href="esp32-s3.html">ESP32-S3</a>
+        <a href="pcm5102a.html">PCM5102A</a>
+        <a href="max98357a.html">MAX98357A</a>
+        <a href="accessories.html">配件与接线</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="content">
+    <section class="hero">
+      <p class="eyebrow">Hardware Reference · 2026-08-26</p>
+      <h1>ESP32-S3 N16R8<br>硬件资料总览</h1>
+      <p class="lede">把现有原理图、芯片手册、检测记录和音频示例拆分成可查阅的硬件页面，并明确哪些是实板事实、芯片能力与待验证方案。</p>
+      <div class="hero-meta">
+        <span>离线网页</span>
+        <span>主板 + 音频输出</span>
+        <span>已核对资料冲突</span>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="quick-specs">
+      <div class="section-heading">
+        <div>
+          <p class="kicker">Confirmed board</p>
+          <h2 id="quick-specs">主板核心配置</h2>
+        </div>
+        <p>模组型号由原理图与板上丝印确认，存储容量同时有只读检测记录支持。</p>
+      </div>
+      <div class="metric-grid">
+        <article class="metric"><small>主控</small><strong>ESP32-S3</strong><span>双核 LX7 · 最高 240 MHz</span></article>
+        <article class="metric"><small>程序存储</small><strong>16 MB</strong><span>Quad SPI Flash</span></article>
+        <article class="metric"><small>扩展内存</small><strong>8 MB</strong><span>OPI PSRAM</span></article>
+        <article class="metric"><small>板载连接</small><strong>2× USB-C</strong><span>原生 USB + CH340C</span></article>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="catalogue">
+      <div class="section-heading">
+        <div>
+          <p class="kicker">Hardware catalogue</p>
+          <h2 id="catalogue">按硬件查看</h2>
+        </div>
+        <p>音频器件是外接模块资料，并非 ESP32-S3 开发板上的板载器件。</p>
+      </div>
+      <div class="card-grid">
+        <a class="card" href="esp32-s3.html">
+          <span class="tag">主控开发板</span>
+          <h3>ESP32-S3 N16R8</h3>
+          <p>双 USB-C、44 针排针、CH340C、16 MB Flash 与 8 MB PSRAM。</p>
+        </a>
+        <a class="card" href="pcm5102a.html">
+          <span class="tag blue">立体声 DAC</span>
+          <h3>PCM5102A</h3>
+          <p>高质量线路输出，适合连接有源音箱或后级功放，不能直接推喇叭。</p>
+        </a>
+        <a class="card" href="max98357a.html">
+          <span class="tag amber">单声道功放</span>
+          <h3>MAX98357A</h3>
+          <p>I²S 数字输入、Class-D 功率输出，可直接驱动一只 4–8 Ω 扬声器。</p>
+        </a>
+        <a class="card" href="accessories.html">
+          <span class="tag red">可选配件</span>
+          <h3>麦克风与存储</h3>
+          <p>现有示例涉及 INMP441/ADMP441 和 microSD，但未证明它们属于实装硬件。</p>
+        </a>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="topology">
+      <div class="section-heading">
+        <div>
+          <p class="kicker">Signal path</p>
+          <h2 id="topology">系统关系</h2>
+        </div>
+        <p>PCM5102A 与 MAX98357A 是两种不同输出路线，通常二选一。</p>
+      </div>
+      <div class="signal-flow" aria-label="线路输出方案">
+        <div class="flow-node"><strong>音频数据</strong><span class="muted">网络 / 文件 / 算法</span></div>
+        <div class="flow-arrow" aria-hidden="true">→</div>
+        <div class="flow-node"><strong>ESP32-S3</strong><span class="muted">解码与 I²S 输出</span></div>
+        <div class="flow-arrow" aria-hidden="true">→</div>
+        <div class="flow-node"><strong>PCM5102A</strong><span class="muted">立体声 DAC</span></div>
+        <div class="flow-arrow" aria-hidden="true">→</div>
+        <div class="flow-node"><strong>后级 / 有源音箱</strong><span class="muted">线路级输入</span></div>
+      </div>
+      <div class="signal-flow" aria-label="直接驱动扬声器方案" style="margin-top:12px">
+        <div class="flow-node"><strong>音频数据</strong><span class="muted">网络 / 文件 / 算法</span></div>
+        <div class="flow-arrow" aria-hidden="true">→</div>
+        <div class="flow-node"><strong>ESP32-S3</strong><span class="muted">解码与 I²S 输出</span></div>
+        <div class="flow-arrow" aria-hidden="true">→</div>
+        <div class="flow-node"><strong>MAX98357A</strong><span class="muted">DAC + 单声道功放</span></div>
+        <div class="flow-arrow" aria-hidden="true">→</div>
+        <div class="flow-node"><strong>4–8 Ω 扬声器</strong><span class="muted">差分连接</span></div>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="warnings">
+      <div class="section-heading">
+        <div>
+          <p class="kicker">Read first</p>
+          <h2 id="warnings">先看这四点</h2>
+        </div>
+      </div>
+      <div class="two-column">
+        <div class="callout danger"><strong>GPIO35–37 不能随意使用</strong>N16R8 启用 OPI PSRAM 时会占用 GPIO26–37；虽然板上引出了 35–37，也应避开。</div>
+        <div class="callout warning"><strong>旧 ESP32 接线不能照抄</strong>资料中的 GPIO22/25/26/27/34 接线不适用于这块 ESP32-S3 板。</div>
+        <div class="callout warning"><strong>经典蓝牙代码不兼容</strong>ESP32-S3 仅支持 BLE，附带的 Bluetooth Classic A2DP 示例不能直接运行。</div>
+        <div class="callout success"><strong>推荐起始 I²S 映射</strong>音频输出可先采用 BCLK=GPIO4、LRCLK=GPIO5、DATA=GPIO6，再按项目扩展。</div>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="confidence">
+      <div class="section-heading">
+        <div>
+          <p class="kicker">Evidence</p>
+          <h2 id="confidence">信息可信度</h2>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <caption class="muted">资料可信度与使用边界</caption>
+          <thead><tr><th scope="col">等级</th><th scope="col">含义</th><th scope="col">本资料中的例子</th></tr></thead>
+          <tbody>
+            <tr><td><span class="tag">已确认</span></td><td>原理图、丝印或实机读取相互印证</td><td>模组型号、Flash/PSRAM、USB 与板载灯连接</td></tr>
+            <tr><td><span class="tag blue">芯片能力</span></td><td>芯片支持，但不代表开发板全部引出</td><td>ADC、Touch、I²S、USB OTG、BLE</td></tr>
+            <tr><td><span class="tag amber">建议方案</span></td><td>基于现有占用关系给出的安全起点</td><td>I²S 与 microSD 的重新映射</td></tr>
+            <tr><td><span class="tag red">待验证</span></td><td>资料不足或不同文件互相矛盾</td><td>稳压器型号、标准 USB-C Host 角色、GY-PCM5102 模块细节</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <footer class="page-footer">
+    <div class="footer-inner"><span>ESP32-S3 硬件资料库</span><span>依据当前本地文件整理 · 2026-08-26</span></div>
+  </footer>
+</body>
+</html>

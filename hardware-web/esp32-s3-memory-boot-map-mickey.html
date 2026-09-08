@@ -1,0 +1,2491 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; style-src 'unsafe-inline' blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; img-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; font-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; media-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; worker-src blob:; connect-src blob: data:; frame-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<title>ESP32-S3 v2.0.1 米奇主题存储地图与启动路径</title>
+<style>:root{color-scheme:light dark;background:light-dark(rgb(255 255 255), rgb(24 24 24))}html,body{margin:0}body{box-sizing:border-box;padding:1rem;background:inherit}iframe{display:block;width:100%;height:calc(100vh - 2rem);margin:0 auto;border:0}</style>
+</head>
+<body>
+<iframe sandbox="allow-scripts" referrerpolicy="no-referrer" title="ESP32-S3 v2.0.1 米奇主题存储地图与启动路径" srcdoc="&lt;!doctype html&gt;
+&lt;html lang=&quot;en&quot;&gt;
+&lt;head&gt;
+&lt;meta charset=&quot;utf-8&quot;&gt;
+&lt;meta name=&quot;viewport&quot; content=&quot;width=device-width, initial-scale=1&quot;&gt;
+&lt;meta name=&quot;referrer&quot; content=&quot;no-referrer&quot;&gt;
+&lt;meta http-equiv=&quot;Content-Security-Policy&quot; content=&quot;default-src &#x27;none&#x27;; script-src &#x27;unsafe-inline&#x27; &#x27;unsafe-eval&#x27; &#x27;wasm-unsafe-eval&#x27; blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; style-src &#x27;unsafe-inline&#x27; blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; img-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; font-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; media-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; worker-src blob:; connect-src blob: data:; frame-src &#x27;none&#x27;; object-src &#x27;none&#x27;; base-uri &#x27;none&#x27;; form-action &#x27;none&#x27;&quot;&gt;
+&lt;title&gt;ESP32-S3 v2.0.1 米奇主题存储地图与启动路径&lt;/title&gt;
+&lt;style&gt;:root {
+  color-scheme: light dark;
+  background-color: var(
+    --background,
+    var(--color-background-primary, light-dark(rgb(255 255 255), rgb(24 24 24)))
+  ) !important;
+
+  /* Agent-facing contract; keep in sync with SKILL.md. */
+  --background: var(
+    --color-background-primary,
+    light-dark(rgb(255 255 255), rgb(24 24 24))
+  );
+  --foreground: var(
+    --color-text-primary,
+    light-dark(rgb(26 28 31), rgb(255 255 255))
+  );
+  --card: color-mix(in oklab, var(--foreground) 5%, var(--background));
+  --card-foreground: var(
+    --color-text-primary,
+    light-dark(rgb(26 28 31), rgb(255 255 255))
+  );
+  --popover: var(
+    --color-background-secondary,
+    light-dark(rgb(255 255 255), rgb(45 45 45))
+  );
+  --popover-foreground: var(
+    --color-text-primary,
+    light-dark(rgb(26 28 31), rgb(255 255 255))
+  );
+  --primary: var(
+    --color-text-info,
+    light-dark(rgb(51 156 255), rgb(131 195 255))
+  );
+  --primary-foreground: var(
+    --color-text-inverse,
+    light-dark(rgb(255 255 255), rgb(13 13 13))
+  );
+  --secondary: var(
+    --color-background-secondary,
+    light-dark(rgb(255 255 255 / 96%), rgb(54 54 54 / 96%))
+  );
+  --secondary-foreground: var(
+    --color-text-primary,
+    light-dark(rgb(26 28 31), rgb(255 255 255))
+  );
+  --muted: color-mix(in srgb, var(--foreground) 10%, transparent);
+  --muted-foreground: var(
+    --color-text-secondary,
+    light-dark(rgb(26 28 31 / 49.4%), rgb(255 255 255 / 49.8%))
+  );
+  --accent: var(
+    --color-background-info,
+    light-dark(rgb(229 242 255), rgb(13 39 63))
+  );
+  --accent-foreground: var(
+    --color-text-info,
+    light-dark(rgb(51 156 255), rgb(131 195 255))
+  );
+  --destructive: var(
+    --color-text-warning,
+    light-dark(rgb(226 85 7), rgb(255 133 73))
+  );
+  --border: var(
+    --color-border-secondary,
+    light-dark(rgb(26 28 31 / 8%), rgb(255 255 255 / 8.2%))
+  );
+  --input: var(
+    --color-border-primary,
+    light-dark(
+      rgb(26 28 31 / 11.8%),
+      color-mix(in oklab, rgb(0 0 0) 10%, transparent)
+    )
+  );
+  --ring: var(
+    --color-ring-primary,
+    light-dark(rgb(51 156 255), rgb(131 195 255 / 76%))
+  );
+  --font-size-base: var(--font-text-md-size, 14px);
+  --blue: light-dark(rgb(51 156 255), rgb(51 156 255));
+  --orange: light-dark(rgb(226 85 7), rgb(251 106 34));
+  --green: light-dark(rgb(0 162 64), rgb(64 201 119));
+  --red: light-dark(rgb(224 46 42), rgb(255 103 100));
+  --purple: light-dark(rgb(146 79 247), rgb(173 123 249));
+  --yellow: light-dark(rgb(255 195 0), rgb(255 210 64));
+  --viz-series-1: var(--primary);
+  --viz-series-2: light-dark(rgb(243 136 59), rgb(245 154 86));
+  --viz-series-3: light-dark(rgb(93 201 119), rgb(116 213 139));
+  --viz-series-4: light-dark(rgb(235 119 177), rgb(240 143 192));
+  --viz-series-5: light-dark(rgb(155 121 236), rgb(170 145 239));
+  --viz-series-6: light-dark(rgb(58 185 177), rgb(90 203 194));
+
+  /* Internal implementation variables; not part of the agent contract. */
+  --font-sans: -apple-system, system-ui, &quot;Segoe UI&quot;, sans-serif;
+  --font-mono:
+    ui-monospace, SFMono-Regular, &quot;SF Mono&quot;, Menlo, Consolas, &quot;Liberation Mono&quot;,
+    monospace;
+  --font-size-normal: max(11px, var(--font-size-base));
+  --font-size-tooltip: calc(var(--font-size-base) - 1px);
+  --font-size-small: max(11px, calc(var(--font-size-base) - 2px));
+  --font-size-h1: calc(var(--font-size-normal) * 1.7142857143);
+  --font-size-h2: calc(var(--font-size-normal) * 1.4285714286);
+  --font-size-h3: calc(var(--font-size-normal) * 1.2857142857);
+  --font-weight-normal: 430;
+  --font-weight-medium: 500;
+  --line-height-normal: calc(var(--font-size-normal) * 1.5);
+  --line-height-tooltip: calc(var(--font-size-tooltip) * 1.4285714286);
+  --line-height-small: calc(var(--font-size-small) + 4px);
+  --radius: var(--border-radius-lg, 12.5px);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-2xl: calc(var(--radius) * 1.6);
+  --radius-full: 9999px;
+  --shadow-sm: 0 1px 2px -1px rgb(0 0 0 / 8%);
+  --checkmark-image: url(&quot;data:image/svg+xml,%3Csvg xmlns=&#x27;http://www.w3.org/2000/svg&#x27; viewBox=&#x27;0 0 17 17&#x27;%3E%3Cpath d=&#x27;M12.8961 3.64101C13.1297 3.41418 13.4984 3.37523 13.7779 3.56581C14.0571 3.75635 14.1554 4.11331 14.0299 4.41347L13.9615 4.53847L7.71151 13.7045C7.59411 13.8767 7.4063 13.9877 7.19881 14.0072C6.99136 14.0267 6.78564 13.9533 6.63826 13.806L2.88826 10.056L2.79842 9.9457C2.6192 9.67407 2.64927 9.30496 2.88826 9.06581C3.12738 8.82669 3.49647 8.79676 3.76815 8.97597L3.8785 9.06581L7.03084 12.2182L12.8053 3.74941L12.8961 3.64101Z&#x27;/%3E%3C/svg%3E&quot;);
+
+  /* Legacy aliases; not part of the current agent contract. */
+  --viz-bg: transparent;
+  --viz-panel: var(--card);
+  --viz-border: var(--border);
+  --viz-text: var(--foreground);
+  --viz-muted: var(--muted-foreground);
+  --viz-accent: var(--primary);
+  --viz-accent-text: var(--primary-foreground);
+  --viz-accent-bg: var(--accent);
+  --viz-font-size: var(--font-size-base);
+  --viz-warning: var(--destructive);
+}
+
+:root[data-theme=&quot;light&quot;] {
+  color-scheme: light;
+}
+
+:root[data-theme=&quot;dark&quot;] {
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html &gt; body {
+  /* Preserve MCP aliases for older inline renderers without creating :root cycles. */
+  --color-background-primary: var(
+    --background,
+    light-dark(rgb(255 255 255), rgb(24 24 24))
+  );
+  --color-text-primary: var(
+    --foreground,
+    light-dark(rgb(26 28 31), rgb(255 255 255))
+  );
+  --color-border-secondary: var(
+    --border,
+    light-dark(rgb(26 28 31 / 8%), rgb(255 255 255 / 8.2%))
+  );
+
+  margin: 0;
+  padding: 5px;
+  color: var(--foreground);
+  background: transparent !important;
+  font-family: var(--font-sans) !important;
+  font-size: var(--font-size-normal);
+  font-weight: var(--font-weight-normal);
+  line-height: var(--line-height-normal);
+}
+
+a {
+  color: color-mix(in srgb, var(--viz-accent) 80%, var(--viz-text) 20%);
+  cursor: pointer;
+  font-weight: var(--font-weight-medium, 500);
+  text-decoration: none;
+  text-underline-offset: 2px;
+}
+
+a:is(:hover, :focus-visible) {
+  text-decoration-line: underline;
+  text-decoration-style: dashed;
+  text-decoration-thickness: 0.5px;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+p {
+  margin-block: 0;
+}
+
+h1 {
+  font-size: var(--font-size-h1);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.25;
+}
+
+h2 {
+  font-size: var(--font-size-h2);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.25;
+}
+
+h3,
+h4,
+h5,
+h6 {
+  font-size: var(--font-size-h3);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.3;
+}
+
+b,
+strong,
+th {
+  font-weight: var(--font-weight-medium);
+}
+
+code:not(pre code) {
+  display: inline;
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  corner-shape: superellipse(1.5);
+  background: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  overflow-wrap: anywhere;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+  word-break: break-word;
+}
+
+.table-responsive {
+  width: 100%;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  color: var(--foreground);
+  font: inherit;
+  text-align: start;
+}
+
+.table :is(th, td) {
+  padding-block: 10px;
+  padding-inline: 0 24px;
+  overflow-wrap: anywhere;
+  border-bottom: 1px solid var(--border);
+  text-align: start;
+  vertical-align: top;
+}
+
+.table-responsive &gt; .table :is(th, td) {
+  overflow-wrap: break-word;
+}
+
+.table :is(th, td):last-child {
+  padding-inline-end: 0;
+}
+
+.table :is(caption, thead th) {
+  font-weight: 600;
+}
+
+.table thead th {
+  padding-block: 8px;
+  border-bottom-color: color-mix(in srgb, var(--foreground) 16%, transparent);
+}
+
+.table tbody tr:last-child :is(th, td) {
+  border-bottom: 0;
+}
+
+.table.table-sm :is(th, td) {
+  padding-block: 6px;
+}
+
+.table.table-sm :is(th, td):not(:last-child) {
+  padding-inline-end: 16px;
+}
+
+.table :is(.text-end, [align=&quot;right&quot;]) {
+  text-align: end;
+  font-variant-numeric: tabular-nums;
+}
+
+.table :is(.text-center, [align=&quot;center&quot;]) {
+  text-align: center;
+}
+
+.table .text-nowrap {
+  white-space: nowrap;
+}
+
+#widget {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  padding: 0;
+  background: transparent !important;
+}
+
+.card {
+  min-width: 0;
+  padding: 12px;
+  overflow: hidden;
+  overflow-wrap: break-word;
+  border-radius: var(--radius-2xl);
+  corner-shape: superellipse(1.5);
+  color: var(--card-foreground);
+  background: var(--card);
+}
+
+#widget &gt; :not(.card, .progress) {
+  width: 100% !important;
+  max-width: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.tooltip {
+  position: fixed;
+  z-index: 50;
+  top: 0;
+  left: 0;
+  width: max-content;
+  max-width: min(
+    20rem,
+    var(--tooltip-available-width, calc(100vw - 10px)),
+    calc(100vw - 10px)
+  );
+  max-height: min(
+    var(--tooltip-available-height, calc(100vh - 10px)),
+    calc(100vh - 10px)
+  );
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  corner-shape: superellipse(1.5);
+  color: var(--popover-foreground);
+  background: var(--popover);
+  box-shadow: none;
+  font-size: var(--font-size-tooltip);
+  line-height: var(--line-height-tooltip);
+  overflow-wrap: break-word;
+  white-space: normal;
+  pointer-events: none;
+  user-select: none;
+}
+
+.viz-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(max(180px, 24%), 1fr));
+  gap: 10px;
+}
+
+.viz-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.viz-stat-value {
+  font-size: var(--font-size-h2);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.25;
+}
+
+.viz-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.progress {
+  display: flex;
+  height: 6px;
+  margin-block: calc((var(--line-height-normal, 1.5em) - 6px) / 2);
+  overflow: hidden;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: var(--muted);
+}
+
+.progress-bar {
+  height: 100%;
+  flex-shrink: 0;
+  border: 0;
+  background: var(--viz-series-1);
+}
+
+.viz-badge {
+  padding: 3px 8px;
+  border-radius: var(--radius-full);
+  color: var(--accent-foreground);
+  background: var(--accent);
+  font-weight: var(--font-weight-medium);
+}
+
+small,
+.text-small,
+.viz-badge {
+  font-size: var(--font-size-small);
+  line-height: var(--line-height-small);
+}
+
+.text-muted {
+  color: var(--muted-foreground);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.viz-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.viz-controls &gt; .form-label {
+  display: grid;
+  min-width: min(100%, 260px);
+  flex: 1 1 280px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 2px 12px;
+  margin-bottom: 0;
+}
+
+.viz-controls &gt; .form-label &gt; :is(.form-control, .form-range, .form-select) {
+  grid-column: 1 / -1;
+}
+
+.btn,
+.form-check-input,
+.form-control,
+.form-range,
+.form-select {
+  font: inherit;
+}
+
+.btn {
+  appearance: button;
+  display: inline-flex;
+  inline-size: fit-content;
+  max-inline-size: 100%;
+  min-height: 28px;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  margin: 0;
+  padding: 0 8px;
+  -webkit-app-region: no-drag;
+  border: 1px solid var(--input);
+  border-radius: var(--radius-lg);
+  corner-shape: superellipse(1.5);
+  color: var(--secondary-foreground);
+  background: var(--secondary);
+  cursor: var(--cursor-interaction, pointer);
+  text-align: center;
+  text-decoration: none;
+  white-space: nowrap;
+  user-select: none;
+  -webkit-font-smoothing: antialiased;
+}
+
+.btn:is(.btn-block, .viz-tile) {
+  inline-size: 100%;
+}
+
+.btn.viz-tile {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+a.btn {
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.btn:not(:disabled):hover {
+  background: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+}
+
+.btn-primary {
+  border-color: transparent;
+  color: var(--primary-foreground);
+  background: var(--foreground);
+  background-clip: padding-box;
+}
+
+.btn-primary .text-muted {
+  color: color-mix(in srgb, var(--primary-foreground) 50%, transparent);
+}
+
+.btn-primary:not(:disabled):hover {
+  background: color-mix(in srgb, var(--foreground) 80%, transparent);
+  background-clip: padding-box;
+}
+
+.btn-ghost {
+  border-color: transparent;
+  color: var(--muted-foreground);
+  background: transparent;
+}
+
+.btn-ghost:not(:disabled):hover {
+  color: var(--foreground);
+  background: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+}
+
+.btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+[data-lucide] {
+  stroke-width: 1.6;
+}
+
+.form-label {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--foreground);
+}
+
+.form-control {
+  display: block;
+  width: 100%;
+  min-height: 28px;
+  padding: 0 8px;
+  outline: none;
+  border: 1px solid var(--input);
+  border-radius: var(--radius-lg);
+  corner-shape: superellipse(1.5);
+  color: var(--foreground);
+  background: var(--secondary);
+}
+
+.form-control::placeholder {
+  color: var(--muted-foreground);
+}
+
+.form-control[type=&quot;file&quot;] {
+  padding: 0;
+  overflow: hidden;
+  cursor: var(--cursor-interaction, pointer);
+}
+
+.form-control[type=&quot;file&quot;]::file-selector-button {
+  min-height: 26px;
+  margin-right: 8px;
+  padding: 0 8px;
+  border: 0;
+  border-right: 1px solid var(--input);
+  color: var(--secondary-foreground);
+  background: var(--secondary);
+  cursor: inherit;
+  font: inherit;
+}
+
+.form-control[type=&quot;file&quot;]:not(:disabled):hover::file-selector-button {
+  background: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+}
+
+.form-control-color[type=&quot;color&quot;] {
+  width: 40px;
+  height: 28px;
+  padding: 3px;
+  cursor: var(--cursor-interaction, pointer);
+}
+
+.form-control-color[type=&quot;color&quot;]::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.form-control-color[type=&quot;color&quot;]::-webkit-color-swatch {
+  border: 0;
+  border-radius: calc(var(--radius-lg) - 4px);
+  corner-shape: superellipse(1.5);
+}
+
+textarea.form-control {
+  height: auto;
+  min-height: 72px;
+  padding: 8px 10px;
+  resize: vertical;
+}
+
+.form-control:focus-visible {
+  border-color: var(--ring);
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+.form-control:disabled,
+.form-select:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.form-select {
+  appearance: none;
+  display: block;
+  width: 100%;
+  min-height: 28px;
+  margin: 0;
+  padding: 0 32px 0 8px;
+  outline: none;
+  border: 1px solid var(--input);
+  border-radius: var(--radius-lg);
+  corner-shape: superellipse(1.5);
+  color: var(--foreground);
+  background-color: var(--secondary);
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--muted-foreground) 50%),
+    linear-gradient(135deg, var(--muted-foreground) 50%, transparent 50%);
+  background-position:
+    calc(100% - 14px) 50%,
+    calc(100% - 10px) 50%;
+  background-repeat: no-repeat;
+  background-size: 4px 4px;
+  cursor: var(--cursor-interaction, default);
+}
+
+.form-select:not(:disabled):hover {
+  background-color: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+}
+
+.form-select:focus-visible {
+  border-color: var(--ring);
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+.form-check {
+  display: flex;
+  min-height: 20px;
+  align-items: center;
+  gap: 6px;
+}
+
+.form-check-input {
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  margin: 0;
+  border: 1px solid var(--input);
+  color: var(--primary-foreground);
+  background-color: transparent;
+  cursor: var(--cursor-interaction, default);
+  transition:
+    background-color 150ms,
+    border-color 150ms,
+    box-shadow 150ms;
+}
+
+.form-check:not(.form-switch) .form-check-input[type=&quot;checkbox&quot;] {
+  border-color: var(--input);
+  border-radius: var(--radius-sm);
+  corner-shape: superellipse(1.5);
+  background-color: var(--secondary);
+  box-shadow: var(--shadow-sm);
+}
+
+.form-check:not(.form-switch)
+  .form-check-input:not(:disabled):not(:checked):hover {
+  background-color: var(--card);
+}
+
+.form-check:not(.form-switch) .form-check-input[type=&quot;checkbox&quot;]:checked {
+  border-color: var(--primary);
+  background-color: var(--primary);
+}
+
+.form-check:not(.form-switch)
+  .form-check-input[type=&quot;checkbox&quot;]:checked::before {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: var(--primary-foreground);
+  content: &quot;&quot;;
+  mask: var(--checkmark-image) center / 12px 12px no-repeat;
+}
+
+.form-check-input[type=&quot;radio&quot;] {
+  width: 14px;
+  height: 14px;
+  border-radius: var(--radius-full);
+}
+
+.form-check-input[type=&quot;radio&quot;]:checked {
+  border: 2px solid var(--primary);
+  background:
+    radial-gradient(circle, var(--primary-foreground) 0 2.5px, transparent 3px),
+    var(--primary);
+}
+
+.form-check:not(.form-switch) .form-check-input:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.form-check:not(.form-switch) .form-check-input:disabled {
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.form-check:not(.form-switch) .form-check-input:disabled + .form-check-label {
+  cursor: not-allowed;
+}
+
+.form-switch .form-check-input:disabled,
+.form-switch .form-check-input:disabled + .form-check-label {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.form-check-label {
+  color: var(--foreground);
+  cursor: var(--cursor-interaction, default);
+}
+
+.form-switch .form-check-input {
+  position: relative;
+  width: 32px;
+  height: 20px;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: var(--muted);
+  box-shadow: none;
+  transition: background-color 200ms cubic-bezier(0, 0, 0.2, 1);
+}
+
+.form-switch .form-check-input::before {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 16px;
+  height: 16px;
+  box-sizing: border-box;
+  border: 1px solid light-dark(var(--primary-foreground), var(--foreground));
+  border-radius: var(--radius-full);
+  background: light-dark(var(--primary-foreground), var(--foreground));
+  box-shadow: var(--shadow-sm);
+  content: &quot;&quot;;
+  transform: translate(2px, -50%);
+  transition: transform 200ms cubic-bezier(0, 0, 0.2, 1);
+}
+
+.form-switch .form-check-input:checked {
+  background: var(--primary);
+}
+
+.form-switch .form-check-input:checked::before {
+  transform: translate(14px, -50%);
+}
+
+.form-switch .form-check-input:focus-visible {
+  box-shadow: 0 0 0 2px var(--ring);
+}
+
+.form-range {
+  appearance: none;
+  display: block;
+  width: 100%;
+  height: 28px;
+  flex: 1;
+  margin: 0;
+  padding: 0;
+  outline: none;
+  border: 0;
+  accent-color: var(--primary);
+  background: linear-gradient(
+      color-mix(in srgb, var(--foreground) 7%, transparent),
+      color-mix(in srgb, var(--foreground) 7%, transparent)
+    )
+    center / 100% 2px no-repeat;
+}
+
+.form-range::-webkit-slider-runnable-track {
+  height: 28px;
+  background: transparent;
+}
+
+.form-range::-webkit-slider-thumb {
+  appearance: none;
+  width: 20px;
+  height: 20px;
+  margin-top: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  background: light-dark(var(--primary-foreground), var(--foreground));
+}
+
+.form-range:focus-visible::-webkit-slider-thumb {
+  border-color: var(--ring);
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+.form-range::-moz-range-track {
+  height: 28px;
+  background: transparent;
+}
+
+.form-range::-moz-range-thumb {
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  background: light-dark(var(--primary-foreground), var(--foreground));
+}
+
+.form-range:focus-visible::-moz-range-thumb {
+  border-color: var(--ring);
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+.form-range:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.btn:not(.btn-primary, .viz-tile):is(
+  [aria-pressed=&quot;true&quot;],
+  [aria-selected=&quot;true&quot;],
+  .is-selected
+) {
+  border-color: var(--primary);
+  color: var(--primary-foreground);
+  background: var(--primary);
+}
+
+.btn.viz-tile:is([aria-pressed=&quot;true&quot;], [aria-selected=&quot;true&quot;], .is-selected) {
+  border-color: var(--primary);
+  box-shadow: inset 0 0 0 1px var(--primary);
+}
+
+.btn:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+#widget &gt; svg {
+  width: 100%;
+}
+
+/* Model-authored chart rules can otherwise stretch icons after these styles load. */
+svg.lucide {
+  display: block;
+  width: 16px !important;
+  height: 16px !important;
+  flex: none;
+  margin: 0 !important;
+  stroke-width: 1.6;
+}
+
+.text-warning,
+.text-destructive {
+  color: var(--destructive);
+}
+
+html&gt;body{padding:0}&lt;/style&gt;
+&lt;/head&gt;
+&lt;body&gt;
+&lt;style&gt;
+#esp32-s3-memory-boot-map {
+  --primary: var(--red);
+  --primary-foreground: var(--yellow);
+  --accent: color-mix(in srgb, var(--yellow) 24%, var(--background));
+  --accent-foreground: var(--foreground);
+  --viz-series-1: color-mix(in srgb, var(--red) 72%, var(--background));
+  --viz-series-2: color-mix(in srgb, var(--yellow) 76%, var(--background));
+  --viz-series-3: color-mix(in srgb, var(--foreground) 72%, var(--background));
+  --viz-series-4: color-mix(in srgb, var(--red) 52%, var(--yellow));
+  --viz-series-5: color-mix(in srgb, var(--yellow) 48%, var(--background));
+  --viz-series-6: color-mix(in srgb, var(--foreground) 44%, var(--background));
+  --rom: var(--viz-series-1);
+  --sram: var(--viz-series-2);
+  --flash: var(--viz-series-3);
+  --psram: var(--viz-series-4);
+  --rtc: var(--viz-series-5);
+  --free: var(--muted-foreground);
+  color: var(--foreground);
+  display: grid;
+  font-family: ui-rounded, &quot;SF Pro Rounded&quot;, system-ui, sans-serif;
+  gap: 2rem;
+  min-width: 0;
+  width: 100%;
+}
+
+#esp32-s3-memory-boot-map * {
+  box-sizing: border-box;
+}
+
+#esp32-s3-memory-boot-map &gt; *,
+#esp32-s3-memory-boot-map .hero &gt; *,
+#esp32-s3-memory-boot-map .section-head &gt; * {
+  min-width: 0;
+}
+
+#esp32-s3-memory-boot-map h1,
+#esp32-s3-memory-boot-map h2,
+#esp32-s3-memory-boot-map h3,
+#esp32-s3-memory-boot-map p {
+  margin-top: 0;
+  overflow-wrap: anywhere;
+}
+
+#esp32-s3-memory-boot-map h2 {
+  margin-bottom: 0.35rem;
+}
+
+#esp32-s3-memory-boot-map h3 {
+  margin-bottom: 0.5rem;
+}
+
+#esp32-s3-memory-boot-map code,
+#esp32-s3-memory-boot-map .mono,
+#esp32-s3-memory-boot-map .number {
+  font-variant-numeric: tabular-nums;
+}
+
+#esp32-s3-memory-boot-map .hero {
+  align-items: flex-start;
+  display: flex;
+  gap: 1rem;
+  justify-content: space-between;
+  padding-bottom: 0.35rem;
+  position: relative;
+}
+
+#esp32-s3-memory-boot-map .hero::after {
+  background: linear-gradient(90deg, var(--foreground) 0 18%, var(--red) 18% 70%, var(--yellow) 70% 100%);
+  bottom: 0;
+  content: &quot;&quot;;
+  height: 0.22rem;
+  left: 0;
+  position: absolute;
+  width: 100%;
+}
+
+#esp32-s3-memory-boot-map .hero h1 {
+  margin-bottom: 0.35rem;
+}
+
+#esp32-s3-memory-boot-map .hero p {
+  margin-bottom: 0;
+  max-width: 48rem;
+}
+
+#esp32-s3-memory-boot-map .eyebrow,
+#esp32-s3-memory-boot-map .section-kicker,
+#esp32-s3-memory-boot-map .lane-title,
+#esp32-s3-memory-boot-map .domain-label {
+  color: var(--muted-foreground);
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+#esp32-s3-memory-boot-map .eyebrow,
+#esp32-s3-memory-boot-map .section-kicker {
+  color: var(--red);
+}
+
+#esp32-s3-memory-boot-map section:not(.risk-card) h2::after {
+  background: var(--red);
+  border-radius: 50%;
+  box-shadow: 0.72rem 0 0 var(--yellow);
+  content: &quot;&quot;;
+  display: inline-block;
+  height: 0.48rem;
+  margin-left: 0.55rem;
+  vertical-align: middle;
+  width: 0.48rem;
+}
+
+#esp32-s3-memory-boot-map .eyebrow,
+#esp32-s3-memory-boot-map .section-kicker {
+  align-items: center;
+  display: flex;
+  gap: 0.4rem;
+}
+
+#esp32-s3-memory-boot-map .build-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  justify-content: flex-end;
+  max-width: 24rem;
+}
+
+#esp32-s3-memory-boot-map .hero-side {
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  min-width: 11rem;
+}
+
+#esp32-s3-memory-boot-map .mouse-emblem {
+  height: 4.9rem;
+  position: relative;
+  width: 6.5rem;
+}
+
+#esp32-s3-memory-boot-map .mouse-head,
+#esp32-s3-memory-boot-map .mouse-ear {
+  background: var(--foreground);
+  border-radius: 50%;
+  display: block;
+  position: absolute;
+}
+
+#esp32-s3-memory-boot-map .mouse-head {
+  height: 3.55rem;
+  left: 50%;
+  top: 0.9rem;
+  transform: translateX(-50%);
+  width: 3.55rem;
+}
+
+#esp32-s3-memory-boot-map .mouse-ear {
+  height: 2.15rem;
+  top: 0;
+  width: 2.15rem;
+}
+
+#esp32-s3-memory-boot-map .mouse-ear.left { left: 0.35rem; }
+#esp32-s3-memory-boot-map .mouse-ear.right { right: 0.35rem; }
+
+#esp32-s3-memory-boot-map .mouse-shorts {
+  background: var(--red);
+  border-radius: 999px;
+  bottom: 0;
+  display: block;
+  height: 1.15rem;
+  left: 50%;
+  position: absolute;
+  transform: translateX(-50%);
+  width: 3.8rem;
+}
+
+#esp32-s3-memory-boot-map .mouse-button {
+  background: var(--yellow);
+  border-radius: 50%;
+  bottom: 0.34rem;
+  display: block;
+  height: 0.48rem;
+  position: absolute;
+  width: 0.48rem;
+}
+
+#esp32-s3-memory-boot-map .mouse-button.left { left: 2.55rem; }
+#esp32-s3-memory-boot-map .mouse-button.right { right: 2.55rem; }
+
+#esp32-s3-memory-boot-map .viz-stat-value {
+  overflow-wrap: anywhere;
+}
+
+#esp32-s3-memory-boot-map .danger-stat .viz-stat-value,
+#esp32-s3-memory-boot-map .danger-stat .stat-context {
+  color: var(--destructive);
+}
+
+#esp32-s3-memory-boot-map .section-head {
+  align-items: end;
+  display: flex;
+  gap: 1rem;
+  justify-content: space-between;
+  margin-bottom: 1rem;
+}
+
+#esp32-s3-memory-boot-map .section-head p {
+  margin-bottom: 0;
+  max-width: 42rem;
+  text-align: right;
+}
+
+#esp32-s3-memory-boot-map .memory-topology {
+  display: grid;
+  gap: 0.75rem;
+}
+
+#esp32-s3-memory-boot-map .domain-row {
+  align-items: stretch;
+  display: grid;
+  gap: 0.55rem;
+  grid-template-columns: 6.5rem repeat(4, minmax(0, 1fr));
+}
+
+#esp32-s3-memory-boot-map .domain-row.external {
+  grid-template-columns: 6.5rem repeat(2, minmax(0, 1fr)) 2fr;
+}
+
+#esp32-s3-memory-boot-map .domain-label {
+  align-items: center;
+  display: flex;
+}
+
+#esp32-s3-memory-boot-map .memory-node {
+  background: color-mix(in srgb, var(--node-color) 14%, transparent);
+  border: 1px solid transparent;
+  border-radius: 0.6rem;
+  min-width: 0;
+  padding: 0.75rem;
+}
+
+#esp32-s3-memory-boot-map .memory-node strong,
+#esp32-s3-memory-boot-map .memory-node span {
+  display: block;
+}
+
+#esp32-s3-memory-boot-map .memory-node strong {
+  font-weight: 500;
+  margin-bottom: 0.18rem;
+}
+
+#esp32-s3-memory-boot-map .memory-node span:last-child {
+  color: var(--muted-foreground);
+}
+
+#esp32-s3-memory-boot-map .node-rom { --node-color: var(--rom); }
+#esp32-s3-memory-boot-map .node-sram { --node-color: var(--sram); }
+#esp32-s3-memory-boot-map .node-rtc { --node-color: var(--rtc); }
+#esp32-s3-memory-boot-map .node-flash { --node-color: var(--flash); }
+#esp32-s3-memory-boot-map .node-psram { --node-color: var(--psram); }
+
+#esp32-s3-memory-boot-map .bus-note {
+  align-items: center;
+  color: var(--muted-foreground);
+  display: flex;
+  gap: 0.45rem;
+}
+
+#esp32-s3-memory-boot-map .bus-line {
+  background: var(--border);
+  flex: 1;
+  height: 1px;
+}
+
+#esp32-s3-memory-boot-map .two-col {
+  display: grid;
+  gap: 1.5rem;
+  grid-template-columns: minmax(0, 1.55fr) minmax(15rem, 0.85fr);
+}
+
+#esp32-s3-memory-boot-map .subsection {
+  min-width: 0;
+}
+
+#esp32-s3-memory-boot-map .allocation-bar,
+#esp32-s3-memory-boot-map .flash-bar,
+#esp32-s3-memory-boot-map .section-bar,
+#esp32-s3-memory-boot-map .mini-meter {
+  background: color-mix(in srgb, var(--muted) 72%, transparent);
+  display: flex;
+  overflow: hidden;
+  width: 100%;
+}
+
+#esp32-s3-memory-boot-map .allocation-bar {
+  height: 3.25rem;
+}
+
+#esp32-s3-memory-boot-map .allocation-bar &gt; span,
+#esp32-s3-memory-boot-map .flash-bar &gt; span,
+#esp32-s3-memory-boot-map .section-bar &gt; span {
+  display: block;
+  min-width: 0;
+}
+
+#esp32-s3-memory-boot-map .segment-cache-i { background: var(--viz-series-1); }
+#esp32-s3-memory-boot-map .segment-cache-d { background: var(--viz-series-2); }
+#esp32-s3-memory-boot-map .segment-iram { background: var(--viz-series-3); }
+#esp32-s3-memory-boot-map .segment-dram { background: var(--viz-series-4); }
+#esp32-s3-memory-boot-map .segment-free { background: color-mix(in srgb, var(--muted-foreground) 42%, transparent); }
+
+#esp32-s3-memory-boot-map .legend-grid {
+  display: grid;
+  gap: 0.45rem 1rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 0.75rem;
+}
+
+#esp32-s3-memory-boot-map .legend-item {
+  align-items: baseline;
+  display: grid;
+  gap: 0.45rem;
+  grid-template-columns: 0.65rem minmax(0, 1fr) auto;
+  min-width: 0;
+}
+
+#esp32-s3-memory-boot-map .swatch {
+  background: var(--swatch);
+  border-radius: 50%;
+  height: 0.55rem;
+  width: 0.55rem;
+}
+
+#esp32-s3-memory-boot-map .legend-value {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+#esp32-s3-memory-boot-map .accounting-grid {
+  border-top: 1px solid var(--border);
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: 1rem;
+  padding-top: 0.8rem;
+}
+
+#esp32-s3-memory-boot-map .accounting-grid strong,
+#esp32-s3-memory-boot-map .accounting-grid span {
+  display: block;
+}
+
+#esp32-s3-memory-boot-map .accounting-grid strong {
+  font-weight: 500;
+}
+
+#esp32-s3-memory-boot-map .meter-list {
+  display: grid;
+  gap: 0.9rem;
+}
+
+#esp32-s3-memory-boot-map .meter-head {
+  align-items: baseline;
+  display: flex;
+  gap: 0.75rem;
+  justify-content: space-between;
+  margin-bottom: 0.32rem;
+}
+
+#esp32-s3-memory-boot-map .mini-meter {
+  height: 0.6rem;
+}
+
+#esp32-s3-memory-boot-map .mini-meter span {
+  background: var(--meter-color);
+  display: block;
+  min-width: 2px;
+}
+
+#esp32-s3-memory-boot-map .capacity-note {
+  border-top: 1px solid var(--border);
+  margin-top: 1rem;
+  padding-top: 0.75rem;
+}
+
+#esp32-s3-memory-boot-map .flash-bar {
+  height: 4.25rem;
+}
+
+#esp32-s3-memory-boot-map .flash-bar .bar-label {
+  align-items: center;
+  color: var(--foreground);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 0;
+  overflow: hidden;
+  padding: 0.25rem;
+  text-align: center;
+}
+
+#esp32-s3-memory-boot-map .flash-bar .bar-label span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  width: 100%;
+}
+
+#esp32-s3-memory-boot-map .flash-system { background: var(--viz-series-5); }
+#esp32-s3-memory-boot-map .flash-app0 { background: var(--viz-series-1); }
+#esp32-s3-memory-boot-map .flash-app1 { background: color-mix(in srgb, var(--viz-series-1) 42%, transparent); }
+#esp32-s3-memory-boot-map .flash-fs { background: color-mix(in srgb, var(--viz-series-3) 62%, transparent); }
+#esp32-s3-memory-boot-map .flash-core { background: var(--viz-series-6); }
+
+#esp32-s3-memory-boot-map .scale-labels {
+  color: var(--muted-foreground);
+  display: flex;
+  justify-content: space-between;
+  margin-top: 0.3rem;
+}
+
+#esp32-s3-memory-boot-map .overview-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 1rem;
+  margin-top: 0.75rem;
+}
+
+#esp32-s3-memory-boot-map .overview-legend span {
+  align-items: center;
+  display: inline-flex;
+  gap: 0.35rem;
+}
+
+#esp32-s3-memory-boot-map .zoom-wrap {
+  border-top: 1px solid var(--border);
+  margin-top: 1.25rem;
+  padding-top: 1rem;
+}
+
+#esp32-s3-memory-boot-map .zoom-title {
+  align-items: baseline;
+  display: flex;
+  gap: 0.65rem;
+  justify-content: space-between;
+  margin-bottom: 0.5rem;
+}
+
+#esp32-s3-memory-boot-map .flash-bar.zoom {
+  height: 3rem;
+}
+
+#esp32-s3-memory-boot-map .zoom-boot { background: var(--viz-series-2); }
+#esp32-s3-memory-boot-map .zoom-table { background: var(--viz-series-6); }
+#esp32-s3-memory-boot-map .zoom-nvs { background: var(--viz-series-4); }
+#esp32-s3-memory-boot-map .zoom-ota { background: var(--viz-series-5); }
+#esp32-s3-memory-boot-map .zoom-gap { background: color-mix(in srgb, var(--muted-foreground) 35%, transparent); }
+
+#esp32-s3-memory-boot-map .table-responsive {
+  margin-top: 1rem;
+}
+
+#esp32-s3-memory-boot-map .table td,
+#esp32-s3-memory-boot-map .table th {
+  vertical-align: top;
+}
+
+#esp32-s3-memory-boot-map .elf-table td:first-child,
+#esp32-s3-memory-boot-map .elf-table td:nth-child(2) {
+  white-space: nowrap;
+}
+
+#esp32-s3-memory-boot-map .used-cell {
+  min-width: 9rem;
+}
+
+#esp32-s3-memory-boot-map .usage-line {
+  align-items: center;
+  display: grid;
+  gap: 0.45rem;
+  grid-template-columns: minmax(3.5rem, 1fr) auto;
+}
+
+#esp32-s3-memory-boot-map .usage-line .mini-meter {
+  margin: 0;
+}
+
+#esp32-s3-memory-boot-map .section-family-list {
+  display: grid;
+  gap: 0.85rem;
+}
+
+#esp32-s3-memory-boot-map .family-row {
+  display: grid;
+  gap: 0.55rem;
+  grid-template-columns: 8rem minmax(0, 1fr) 7.5rem;
+}
+
+#esp32-s3-memory-boot-map .family-label strong,
+#esp32-s3-memory-boot-map .family-label span {
+  display: block;
+}
+
+#esp32-s3-memory-boot-map .family-total {
+  text-align: right;
+}
+
+#esp32-s3-memory-boot-map .section-bar {
+  align-self: center;
+  height: 1.35rem;
+}
+
+#esp32-s3-memory-boot-map .section-appdesc { background: var(--viz-series-5); min-width: 2px; }
+#esp32-s3-memory-boot-map .section-rodata { background: var(--viz-series-2); }
+#esp32-s3-memory-boot-map .section-eh { background: var(--viz-series-6); }
+#esp32-s3-memory-boot-map .section-text { background: var(--viz-series-1); }
+#esp32-s3-memory-boot-map .section-vectors { background: var(--viz-series-4); min-width: 2px; }
+#esp32-s3-memory-boot-map .section-iramtext { background: var(--viz-series-3); }
+#esp32-s3-memory-boot-map .section-align { background: var(--muted-foreground); min-width: 1px; }
+#esp32-s3-memory-boot-map .section-data { background: var(--viz-series-4); }
+#esp32-s3-memory-boot-map .section-bss { background: color-mix(in srgb, var(--viz-series-4) 44%, transparent); }
+
+#esp32-s3-memory-boot-map .section-key {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.9rem;
+  margin-top: 0.75rem;
+}
+
+#esp32-s3-memory-boot-map .section-key span {
+  align-items: center;
+  display: inline-flex;
+  gap: 0.35rem;
+}
+
+#esp32-s3-memory-boot-map .kind-chip {
+  display: inline-flex;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+#esp32-s3-memory-boot-map .kind-xip { color: var(--viz-series-1); }
+#esp32-s3-memory-boot-map .kind-copy { color: var(--viz-series-4); }
+#esp32-s3-memory-boot-map .kind-zero { color: var(--viz-series-6); }
+#esp32-s3-memory-boot-map .kind-reserved { color: var(--muted-foreground); }
+
+#esp32-s3-memory-boot-map .segment-controls {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+#esp32-s3-memory-boot-map .segment-map {
+  display: grid;
+  gap: 0.55rem;
+  margin-top: 1rem;
+}
+
+#esp32-s3-memory-boot-map .image-segment {
+  align-items: center;
+  display: grid;
+  gap: 0.65rem;
+  grid-template-columns: minmax(8rem, 1fr) 2.5rem minmax(8rem, 1fr) minmax(9rem, 1.3fr);
+  min-width: 0;
+}
+
+#esp32-s3-memory-boot-map .address-block {
+  background: color-mix(in srgb, var(--muted) 70%, transparent);
+  border-radius: 0.45rem;
+  min-width: 0;
+  padding: 0.55rem 0.65rem;
+}
+
+#esp32-s3-memory-boot-map .address-block strong,
+#esp32-s3-memory-boot-map .address-block span {
+  display: block;
+}
+
+#esp32-s3-memory-boot-map .address-block code {
+  overflow-wrap: anywhere;
+}
+
+#esp32-s3-memory-boot-map .segment-arrow {
+  color: var(--muted-foreground);
+  text-align: center;
+}
+
+#esp32-s3-memory-boot-map .segment-meta strong,
+#esp32-s3-memory-boot-map .segment-meta span {
+  display: block;
+}
+
+#esp32-s3-memory-boot-map .image-sum {
+  border-top: 1px solid var(--border);
+  display: grid;
+  gap: 0.65rem;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: 0.85rem;
+  padding-top: 0.75rem;
+}
+
+#esp32-s3-memory-boot-map .image-sum strong,
+#esp32-s3-memory-boot-map .image-sum span {
+  display: block;
+}
+
+#esp32-s3-memory-boot-map .boot-flow {
+  display: grid;
+  gap: 0;
+}
+
+#esp32-s3-memory-boot-map .boot-header,
+#esp32-s3-memory-boot-map .boot-step {
+  display: grid;
+  gap: 0.65rem;
+  grid-template-columns: 2.25rem 7.25rem minmax(0, 1.3fr) minmax(0, 1fr);
+}
+
+#esp32-s3-memory-boot-map .boot-header {
+  align-items: end;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0.55rem;
+}
+
+#esp32-s3-memory-boot-map .boot-step {
+  min-width: 0;
+  padding: 0.5rem 0;
+  position: relative;
+}
+
+#esp32-s3-memory-boot-map .boot-step:not(:last-child) {
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 62%, transparent);
+}
+
+#esp32-s3-memory-boot-map .step-index {
+  align-items: center;
+  background: color-mix(in srgb, var(--primary) 14%, transparent);
+  border-radius: 50%;
+  display: flex;
+  height: 1.85rem;
+  justify-content: center;
+  width: 1.85rem;
+}
+
+#esp32-s3-memory-boot-map .step-phase {
+  color: var(--muted-foreground);
+  padding-top: 0.28rem;
+}
+
+#esp32-s3-memory-boot-map .lane-node {
+  background: color-mix(in srgb, var(--lane-color) 11%, transparent);
+  border-radius: 0.5rem;
+  min-width: 0;
+  padding: 0.55rem 0.65rem;
+}
+
+#esp32-s3-memory-boot-map .lane-node strong,
+#esp32-s3-memory-boot-map .lane-node span {
+  display: block;
+}
+
+#esp32-s3-memory-boot-map .lane-node strong {
+  font-weight: 500;
+}
+
+#esp32-s3-memory-boot-map .lane-node.cpu0 { --lane-color: var(--viz-series-1); }
+#esp32-s3-memory-boot-map .lane-node.cpu1 { --lane-color: var(--viz-series-4); }
+#esp32-s3-memory-boot-map .lane-node.shared { --lane-color: var(--viz-series-3); grid-column: 3 / 5; }
+#esp32-s3-memory-boot-map .lane-empty { color: var(--muted-foreground); padding-top: 0.55rem; }
+#esp32-s3-memory-boot-map .mobile-lane { display: none; }
+
+#esp32-s3-memory-boot-map .risk-card {
+  display: grid;
+  gap: 1rem;
+}
+
+#esp32-s3-memory-boot-map .risk-heading {
+  align-items: center;
+  color: var(--destructive);
+  display: flex;
+  gap: 0.5rem;
+}
+
+#esp32-s3-memory-boot-map .risk-heading h2 {
+  margin-bottom: 0;
+}
+
+#esp32-s3-memory-boot-map .offset-compare {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+#esp32-s3-memory-boot-map .offset-line {
+  display: grid;
+  gap: 0.3rem;
+}
+
+#esp32-s3-memory-boot-map .offset-sequence {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+#esp32-s3-memory-boot-map .offset-sequence code {
+  background: color-mix(in srgb, var(--muted) 72%, transparent);
+  border-radius: 0.35rem;
+  padding: 0.25rem 0.4rem;
+}
+
+#esp32-s3-memory-boot-map .offset-line.bad .offset-sequence code,
+#esp32-s3-memory-boot-map .offset-line.bad strong {
+  color: var(--destructive);
+}
+
+#esp32-s3-memory-boot-map .offset-line.good .offset-sequence code,
+#esp32-s3-memory-boot-map .offset-line.good strong {
+  color: var(--green);
+}
+
+#esp32-s3-memory-boot-map .risk-facts {
+  display: grid;
+  gap: 0.5rem 1rem;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+#esp32-s3-memory-boot-map .risk-facts strong,
+#esp32-s3-memory-boot-map .risk-facts span {
+  display: block;
+}
+
+#esp32-s3-memory-boot-map .source-strip {
+  border-top: 1px solid var(--border);
+  color: var(--muted-foreground);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.8rem;
+  padding-top: 0.8rem;
+}
+
+@media (max-width: 760px) {
+  #esp32-s3-memory-boot-map .hero,
+  #esp32-s3-memory-boot-map .section-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  #esp32-s3-memory-boot-map .build-tags {
+    justify-content: flex-start;
+    max-width: 100%;
+    width: 100%;
+  }
+
+  #esp32-s3-memory-boot-map .section-head p {
+    text-align: left;
+  }
+
+  #esp32-s3-memory-boot-map .two-col,
+  #esp32-s3-memory-boot-map .offset-compare {
+    grid-template-columns: 1fr;
+  }
+
+  #esp32-s3-memory-boot-map .domain-row,
+  #esp32-s3-memory-boot-map .domain-row.external {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  #esp32-s3-memory-boot-map .domain-label {
+    grid-column: 1 / -1;
+  }
+
+  #esp32-s3-memory-boot-map .bus-note {
+    display: none;
+  }
+
+  #esp32-s3-memory-boot-map .family-row {
+    grid-template-columns: 6.5rem minmax(0, 1fr);
+  }
+
+  #esp32-s3-memory-boot-map .family-total {
+    grid-column: 2;
+    text-align: left;
+  }
+
+  #esp32-s3-memory-boot-map .image-segment {
+    align-items: stretch;
+    grid-template-columns: minmax(0, 1fr) 1.5rem minmax(0, 1fr);
+  }
+
+  #esp32-s3-memory-boot-map .segment-meta {
+    grid-column: 1 / -1;
+    padding-left: 0.65rem;
+  }
+
+  #esp32-s3-memory-boot-map .boot-header {
+    display: none;
+  }
+
+  #esp32-s3-memory-boot-map .boot-step {
+    grid-template-columns: 2.25rem minmax(0, 1fr);
+    padding: 0.65rem 0;
+  }
+
+  #esp32-s3-memory-boot-map .step-phase {
+    font-weight: 500;
+  }
+
+  #esp32-s3-memory-boot-map .lane-node,
+  #esp32-s3-memory-boot-map .lane-node.shared,
+  #esp32-s3-memory-boot-map .lane-empty {
+    grid-column: 2;
+  }
+
+  #esp32-s3-memory-boot-map .mobile-lane {
+    color: var(--muted-foreground);
+    display: block;
+    margin-bottom: 0.15rem;
+  }
+
+  #esp32-s3-memory-boot-map .lane-empty {
+    display: none;
+  }
+}
+
+@media (max-width: 480px) {
+  #esp32-s3-memory-boot-map {
+    gap: 1.5rem;
+  }
+
+  #esp32-s3-memory-boot-map .legend-grid,
+  #esp32-s3-memory-boot-map .accounting-grid,
+  #esp32-s3-memory-boot-map .image-sum,
+  #esp32-s3-memory-boot-map .risk-facts {
+    grid-template-columns: 1fr;
+  }
+
+  #esp32-s3-memory-boot-map .domain-row,
+  #esp32-s3-memory-boot-map .domain-row.external {
+    grid-template-columns: 1fr;
+  }
+
+  #esp32-s3-memory-boot-map .image-segment {
+    grid-template-columns: 1fr;
+  }
+
+  #esp32-s3-memory-boot-map .segment-arrow {
+    transform: rotate(90deg);
+  }
+
+  #esp32-s3-memory-boot-map .segment-meta {
+    grid-column: auto;
+    padding-left: 0;
+  }
+
+  #esp32-s3-memory-boot-map .flash-bar .bar-label span:last-child,
+  #esp32-s3-memory-boot-map .scale-labels .middle-tick {
+    display: none;
+  }
+
+  #esp32-s3-memory-boot-map .partition-table {
+    min-width: 46rem;
+  }
+
+  #esp32-s3-memory-boot-map .elf-table {
+    min-width: 42rem;
+  }
+}
+&lt;/style&gt;
+
+&lt;main id=&quot;esp32-s3-memory-boot-map&quot;&gt;
+  &lt;header class=&quot;hero&quot;&gt;
+    &lt;div&gt;
+      &lt;div class=&quot;eyebrow text-small&quot;&gt;&lt;i data-lucide=&quot;cpu&quot; aria-hidden=&quot;true&quot;&gt;&lt;/i&gt; Mickey Memory Club · 固件静态取证&lt;/div&gt;
+      &lt;h1&gt;ESP32-S3 v2.0.1 · 米奇主题存储地图与启动路径&lt;/h1&gt;
+      &lt;p class=&quot;text-muted&quot;&gt;以 OTA BIN、匹配 ELF/MAP、分区表、LittleFS 镜像和烧录参数交叉核对；容量采用二进制 KiB / MiB。&lt;/p&gt;
+    &lt;/div&gt;
+    &lt;div class=&quot;hero-side&quot;&gt;
+      &lt;div class=&quot;mouse-emblem&quot; aria-hidden=&quot;true&quot;&gt;
+        &lt;span class=&quot;mouse-ear left&quot;&gt;&lt;/span&gt;
+        &lt;span class=&quot;mouse-ear right&quot;&gt;&lt;/span&gt;
+        &lt;span class=&quot;mouse-head&quot;&gt;&lt;/span&gt;
+        &lt;span class=&quot;mouse-shorts&quot;&gt;&lt;/span&gt;
+        &lt;span class=&quot;mouse-button left&quot;&gt;&lt;/span&gt;
+        &lt;span class=&quot;mouse-button right&quot;&gt;&lt;/span&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;build-tags&quot; aria-label=&quot;构建配置&quot;&gt;
+        &lt;span class=&quot;viz-badge&quot;&gt;ESP-IDF 5.5.5&lt;/span&gt;
+        &lt;span class=&quot;viz-badge&quot;&gt;Flash 16 MiB&lt;/span&gt;
+        &lt;span class=&quot;viz-badge&quot;&gt;PSRAM 8 MiB&lt;/span&gt;
+        &lt;span class=&quot;viz-badge&quot;&gt;双核 240 MHz&lt;/span&gt;
+      &lt;/div&gt;
+    &lt;/div&gt;
+  &lt;/header&gt;
+
+  &lt;div class=&quot;viz-grid&quot; aria-label=&quot;结论摘要&quot;&gt;
+    &lt;article class=&quot;card viz-stat&quot;&gt;
+      &lt;span class=&quot;text-muted&quot;&gt;分析基线&lt;/span&gt;
+      &lt;span class=&quot;viz-stat-value&quot;&gt;v2.0.1&lt;/span&gt;
+      &lt;span class=&quot;stat-context text-small&quot;&gt;OTA BIN 2,114,080 B · 入口 &lt;code&gt;0x40375D98&lt;/code&gt;&lt;/span&gt;
+    &lt;/article&gt;
+    &lt;article class=&quot;card viz-stat&quot;&gt;
+      &lt;span class=&quot;text-muted&quot;&gt;单个 App 槽占用&lt;/span&gt;
+      &lt;span class=&quot;viz-stat-value&quot;&gt;67.2048%&lt;/span&gt;
+      &lt;span class=&quot;stat-context text-small&quot;&gt;2,114,080 / 3,145,728 B · 余 1,031,648 B&lt;/span&gt;
+    &lt;/article&gt;
+    &lt;article class=&quot;card viz-stat danger-stat&quot;&gt;
+      &lt;span class=&quot;text-muted&quot;&gt;全量镜像校验&lt;/span&gt;
+      &lt;span class=&quot;viz-stat-value&quot;&gt;偏移冲突&lt;/span&gt;
+      &lt;span class=&quot;stat-context text-small&quot;&gt;&lt;code&gt;app@0x010000&lt;/code&gt; ≠ 分区表 &lt;code&gt;app0@0x20000&lt;/code&gt;&lt;/span&gt;
+    &lt;/article&gt;
+  &lt;/div&gt;
+
+  &lt;section aria-labelledby=&quot;physical-title&quot;&gt;
+    &lt;div class=&quot;section-head&quot;&gt;
+      &lt;div&gt;
+        &lt;div class=&quot;section-kicker text-small&quot;&gt;&lt;i data-lucide=&quot;boxes&quot; aria-hidden=&quot;true&quot;&gt;&lt;/i&gt; 物理资源&lt;/div&gt;
+        &lt;h2 id=&quot;physical-title&quot;&gt;芯片内外存储层级&lt;/h2&gt;
+      &lt;/div&gt;
+      &lt;p class=&quot;text-muted text-small&quot;&gt;ROM / SRAM / RTC 在芯片内；Flash 与封装内 8 MiB PSRAM 均通过 MSPI 访问。Flash 镜像头实测为 DIO 80 MHz，PSRAM 最终构建为 OPI 80 MHz。&lt;/p&gt;
+    &lt;/div&gt;
+
+    &lt;div class=&quot;memory-topology&quot; role=&quot;img&quot; aria-label=&quot;ESP32-S3 片内与外部存储容量：片内 ROM 384 KiB、SRAM 512 KiB、RTC FAST 和 SLOW 各 8 KiB；外部 Flash 16 MiB、PSRAM 8 MiB&quot;&gt;
+      &lt;div class=&quot;domain-row&quot;&gt;
+        &lt;div class=&quot;domain-label text-small&quot;&gt;片内固定&lt;/div&gt;
+        &lt;div class=&quot;memory-node node-rom&quot;&gt;
+          &lt;strong&gt;Mask ROM · 384 KiB&lt;/strong&gt;
+          &lt;span class=&quot;text-small&quot;&gt;指令窗 &lt;code&gt;0x40000000–0x4005FFFF&lt;/code&gt;&lt;/span&gt;
+          &lt;span class=&quot;text-small&quot;&gt;数据访问窗 128 KiB · &lt;code&gt;0x3FF00000–0x3FF1FFFF&lt;/code&gt;&lt;/span&gt;
+        &lt;/div&gt;
+        &lt;div class=&quot;memory-node node-sram&quot;&gt;
+          &lt;strong&gt;SRAM · 512 KiB&lt;/strong&gt;
+          &lt;span class=&quot;text-small&quot;&gt;IRAM / DRAM 共用物理块&lt;/span&gt;
+        &lt;/div&gt;
+        &lt;div class=&quot;memory-node node-rtc&quot;&gt;
+          &lt;strong&gt;RTC FAST · 8 KiB&lt;/strong&gt;
+          &lt;span class=&quot;text-small&quot;&gt;40 B 系统保留&lt;/span&gt;
+        &lt;/div&gt;
+        &lt;div class=&quot;memory-node node-rtc&quot;&gt;
+          &lt;strong&gt;RTC SLOW · 8 KiB&lt;/strong&gt;
+          &lt;span class=&quot;text-small&quot;&gt;512 B ULP + 32 B 应用&lt;/span&gt;
+        &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;bus-note text-small&quot; aria-hidden=&quot;true&quot;&gt;&lt;span class=&quot;bus-line&quot;&gt;&lt;/span&gt;MSPI / Cache / MMU&lt;span class=&quot;bus-line&quot;&gt;&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;domain-row external&quot;&gt;
+        &lt;div class=&quot;domain-label text-small&quot;&gt;MSPI 地址空间&lt;/div&gt;
+        &lt;div class=&quot;memory-node node-flash&quot;&gt;
+          &lt;strong&gt;Flash · 16 MiB&lt;/strong&gt;
+          &lt;span class=&quot;text-small&quot;&gt;固件、OTA、LittleFS、崩溃转储&lt;/span&gt;
+        &lt;/div&gt;
+        &lt;div class=&quot;memory-node node-psram&quot;&gt;
+          &lt;strong&gt;PSRAM · 8 MiB&lt;/strong&gt;
+          &lt;span class=&quot;text-small&quot;&gt;静态 section 0 B；启动后加入 heap&lt;/span&gt;
+        &lt;/div&gt;
+      &lt;/div&gt;
+    &lt;/div&gt;
+  &lt;/section&gt;
+
+  &lt;section aria-labelledby=&quot;sram-title&quot;&gt;
+    &lt;div class=&quot;section-head&quot;&gt;
+      &lt;div&gt;
+        &lt;div class=&quot;section-kicker text-small&quot;&gt;&lt;i data-lucide=&quot;memory-stick&quot; aria-hidden=&quot;true&quot;&gt;&lt;/i&gt; SRAM / RTC / PSRAM&lt;/div&gt;
+        &lt;h2 id=&quot;sram-title&quot;&gt;运行期内存分配&lt;/h2&gt;
+      &lt;/div&gt;
+      &lt;p class=&quot;text-muted text-small&quot;&gt;SRAM 条形按 512 KiB 物理容量折算；“理论余量”含保留区与碎片，不等于启动后的可分配 heap。&lt;/p&gt;
+    &lt;/div&gt;
+
+    &lt;div class=&quot;two-col&quot;&gt;
+      &lt;div class=&quot;subsection&quot;&gt;
+        &lt;h3&gt;内部 SRAM · 524,288 B&lt;/h3&gt;
+        &lt;div class=&quot;allocation-bar&quot; role=&quot;img&quot; aria-label=&quot;SRAM 512 KiB：指令缓存 16 KiB，数据缓存 32 KiB，静态 IRAM 81,408 B，静态 DRAM 116,208 B，理论余量 277,520 B&quot;&gt;
+          &lt;span class=&quot;segment-cache-i&quot; style=&quot;width:3.125%&quot;&gt;&lt;/span&gt;
+          &lt;span class=&quot;segment-cache-d&quot; style=&quot;width:6.25%&quot;&gt;&lt;/span&gt;
+          &lt;span class=&quot;segment-iram&quot; style=&quot;width:15.5273%&quot;&gt;&lt;/span&gt;
+          &lt;span class=&quot;segment-dram&quot; style=&quot;width:22.1653%&quot;&gt;&lt;/span&gt;
+          &lt;span class=&quot;segment-free&quot; style=&quot;width:52.9327%&quot;&gt;&lt;/span&gt;
+        &lt;/div&gt;
+        &lt;div class=&quot;legend-grid&quot;&gt;
+          &lt;div class=&quot;legend-item&quot;&gt;&lt;span class=&quot;swatch&quot; style=&quot;--swatch:var(--viz-series-1)&quot;&gt;&lt;/span&gt;&lt;span&gt;I-Cache&lt;/span&gt;&lt;span class=&quot;legend-value&quot;&gt;16 KiB · 3.13%&lt;/span&gt;&lt;/div&gt;
+          &lt;div class=&quot;legend-item&quot;&gt;&lt;span class=&quot;swatch&quot; style=&quot;--swatch:var(--viz-series-2)&quot;&gt;&lt;/span&gt;&lt;span&gt;D-Cache&lt;/span&gt;&lt;span class=&quot;legend-value&quot;&gt;32 KiB · 6.25%&lt;/span&gt;&lt;/div&gt;
+          &lt;div class=&quot;legend-item&quot;&gt;&lt;span class=&quot;swatch&quot; style=&quot;--swatch:var(--viz-series-3)&quot;&gt;&lt;/span&gt;&lt;span&gt;IRAM 静态占位&lt;/span&gt;&lt;span class=&quot;legend-value&quot;&gt;81,408 B · 15.53%&lt;/span&gt;&lt;/div&gt;
+          &lt;div class=&quot;legend-item&quot;&gt;&lt;span class=&quot;swatch&quot; style=&quot;--swatch:var(--viz-series-4)&quot;&gt;&lt;/span&gt;&lt;span&gt;DRAM 静态占位&lt;/span&gt;&lt;span class=&quot;legend-value&quot;&gt;116,208 B · 22.16%&lt;/span&gt;&lt;/div&gt;
+          &lt;div class=&quot;legend-item&quot;&gt;&lt;span class=&quot;swatch&quot; style=&quot;--swatch:color-mix(in srgb,var(--muted-foreground) 42%,transparent)&quot;&gt;&lt;/span&gt;&lt;span&gt;理论物理余量&lt;/span&gt;&lt;span class=&quot;legend-value&quot;&gt;277,520 B · 52.93%&lt;/span&gt;&lt;/div&gt;
+        &lt;/div&gt;
+        &lt;div class=&quot;accounting-grid&quot;&gt;
+          &lt;div&gt;&lt;span class=&quot;text-muted text-small&quot;&gt;IRAM 链接窗口&lt;/span&gt;&lt;strong class=&quot;number&quot;&gt;81,408 / 358,144 B&lt;/strong&gt;&lt;span class=&quot;text-muted text-small&quot;&gt;地址尾部余 276,736 B&lt;/span&gt;&lt;/div&gt;
+          &lt;div&gt;&lt;span class=&quot;text-muted text-small&quot;&gt;Arduino DRAM 口径&lt;/span&gt;&lt;strong class=&quot;number&quot;&gt;116,204 / 327,680 B&lt;/strong&gt;&lt;span class=&quot;text-muted text-small&quot;&gt;静态 35.46%，报表余 211,476 B&lt;/span&gt;&lt;/div&gt;
+          &lt;div&gt;&lt;span class=&quot;text-muted text-small&quot;&gt;静态地址占位&lt;/span&gt;&lt;strong class=&quot;number&quot;&gt;197,616 B&lt;/strong&gt;&lt;span class=&quot;text-muted text-small&quot;&gt;section 净数据 197,595 B + 对齐 21 B&lt;/span&gt;&lt;/div&gt;
+        &lt;/div&gt;
+      &lt;/div&gt;
+
+      &lt;div class=&quot;subsection&quot;&gt;
+        &lt;h3&gt;低功耗与外部 RAM&lt;/h3&gt;
+        &lt;div class=&quot;meter-list&quot;&gt;
+          &lt;div&gt;
+            &lt;div class=&quot;meter-head&quot;&gt;&lt;strong&gt;RTC FAST&lt;/strong&gt;&lt;span class=&quot;number&quot;&gt;40 / 8,192 B&lt;/span&gt;&lt;/div&gt;
+            &lt;div class=&quot;mini-meter&quot; role=&quot;progressbar&quot; aria-label=&quot;RTC FAST 使用 40 字节&quot; aria-valuenow=&quot;40&quot; aria-valuemin=&quot;0&quot; aria-valuemax=&quot;8192&quot; style=&quot;--meter-color:var(--viz-series-5)&quot;&gt;&lt;span style=&quot;width:0.4883%&quot;&gt;&lt;/span&gt;&lt;/div&gt;
+            &lt;div class=&quot;text-muted text-small&quot;&gt;系统保留 40 B；应用静态 0 B；余 8,152 B&lt;/div&gt;
+          &lt;/div&gt;
+          &lt;div&gt;
+            &lt;div class=&quot;meter-head&quot;&gt;&lt;strong&gt;RTC SLOW&lt;/strong&gt;&lt;span class=&quot;number&quot;&gt;544 / 8,192 B&lt;/span&gt;&lt;/div&gt;
+            &lt;div class=&quot;mini-meter&quot; role=&quot;progressbar&quot; aria-label=&quot;RTC SLOW 使用与保留 544 字节&quot; aria-valuenow=&quot;544&quot; aria-valuemin=&quot;0&quot; aria-valuemax=&quot;8192&quot; style=&quot;--meter-color:var(--viz-series-5)&quot;&gt;&lt;span style=&quot;width:6.6406%&quot;&gt;&lt;/span&gt;&lt;/div&gt;
+            &lt;div class=&quot;text-muted text-small&quot;&gt;ULP 预留 512 B；&lt;code&gt;.rtc.force_slow&lt;/code&gt; 32 B；余 7,648 B&lt;/div&gt;
+          &lt;/div&gt;
+          &lt;div&gt;
+            &lt;div class=&quot;meter-head&quot;&gt;&lt;strong&gt;PSRAM&lt;/strong&gt;&lt;span class=&quot;number&quot;&gt;静态 0 / 8 MiB&lt;/span&gt;&lt;/div&gt;
+            &lt;div class=&quot;mini-meter&quot; role=&quot;progressbar&quot; aria-label=&quot;PSRAM 静态 section 使用 0 字节，总容量 8 MiB&quot; aria-valuenow=&quot;0&quot; aria-valuemin=&quot;0&quot; aria-valuemax=&quot;8388608&quot; style=&quot;--meter-color:var(--viz-series-4)&quot;&gt;&lt;span style=&quot;width:0%&quot;&gt;&lt;/span&gt;&lt;/div&gt;
+            &lt;div class=&quot;text-muted text-small&quot;&gt;OPI 80 MHz；构建策略为大于 4 KiB 的普通分配优先外部 RAM，真实占用需运行期采样&lt;/div&gt;
+          &lt;/div&gt;
+        &lt;/div&gt;
+        &lt;div class=&quot;capacity-note text-small text-muted&quot;&gt;内部 SRAM 的 512 KiB 是物理视角；IRAM 与 DRAM 是双映射窗口。链接器窗口、Arduino “dynamic memory” 报表和实时 heap 是三个不同口径。&lt;/div&gt;
+      &lt;/div&gt;
+    &lt;/div&gt;
+  &lt;/section&gt;
+
+  &lt;section aria-labelledby=&quot;flash-title&quot;&gt;
+    &lt;div class=&quot;section-head&quot;&gt;
+      &lt;div&gt;
+        &lt;div class=&quot;section-kicker text-small&quot;&gt;&lt;i data-lucide=&quot;hard-drive&quot; aria-hidden=&quot;true&quot;&gt;&lt;/i&gt; Flash 分区&lt;/div&gt;
+        &lt;h2 id=&quot;flash-title&quot;&gt;16 MiB 地址空间&lt;/h2&gt;
+      &lt;/div&gt;
+      &lt;p class=&quot;text-muted text-small&quot;&gt;上条按全盘真实比例；启动区仅占 0.78125%，因此下方单独放大 &lt;code&gt;0x000000–0x01FFFF&lt;/code&gt;。&lt;/p&gt;
+    &lt;/div&gt;
+
+    &lt;div class=&quot;flash-bar&quot; role=&quot;img&quot; aria-label=&quot;16 MiB Flash：启动区 128 KiB、App0 3 MiB、App1 3 MiB、LittleFS 9.8125 MiB、coredump 64 KiB&quot;&gt;
+      &lt;span class=&quot;flash-system bar-label&quot; style=&quot;width:0.78125%&quot; aria-label=&quot;启动区 128 KiB&quot;&gt;&lt;/span&gt;
+      &lt;span class=&quot;flash-app0 bar-label&quot; style=&quot;width:18.75%&quot;&gt;&lt;span&gt;app0&lt;/span&gt;&lt;span class=&quot;text-small&quot;&gt;3 MiB&lt;/span&gt;&lt;/span&gt;
+      &lt;span class=&quot;flash-app1 bar-label&quot; style=&quot;width:18.75%&quot;&gt;&lt;span&gt;app1&lt;/span&gt;&lt;span class=&quot;text-small&quot;&gt;3 MiB&lt;/span&gt;&lt;/span&gt;
+      &lt;span class=&quot;flash-fs bar-label&quot; style=&quot;width:61.328125%&quot;&gt;&lt;span&gt;LittleFS&lt;/span&gt;&lt;span class=&quot;text-small&quot;&gt;9.8125 MiB&lt;/span&gt;&lt;/span&gt;
+      &lt;span class=&quot;flash-core bar-label&quot; style=&quot;width:0.390625%&quot; aria-label=&quot;coredump 64 KiB&quot;&gt;&lt;/span&gt;
+    &lt;/div&gt;
+    &lt;div class=&quot;scale-labels text-small&quot;&gt;&lt;span&gt;&lt;code&gt;0x000000&lt;/code&gt;&lt;/span&gt;&lt;span class=&quot;middle-tick&quot;&gt;&lt;code&gt;0x320000&lt;/code&gt;&lt;/span&gt;&lt;span class=&quot;middle-tick&quot;&gt;&lt;code&gt;0x620000&lt;/code&gt;&lt;/span&gt;&lt;span&gt;&lt;code&gt;0x1000000&lt;/code&gt;&lt;/span&gt;&lt;/div&gt;
+    &lt;div class=&quot;overview-legend text-small&quot;&gt;
+      &lt;span&gt;&lt;i class=&quot;swatch&quot; style=&quot;--swatch:var(--viz-series-5)&quot;&gt;&lt;/i&gt;启动区 128 KiB&lt;/span&gt;
+      &lt;span&gt;&lt;i class=&quot;swatch&quot; style=&quot;--swatch:var(--viz-series-1)&quot;&gt;&lt;/i&gt;app0 / app1 各 3 MiB&lt;/span&gt;
+      &lt;span&gt;&lt;i class=&quot;swatch&quot; style=&quot;--swatch:color-mix(in srgb,var(--viz-series-3) 62%,transparent)&quot;&gt;&lt;/i&gt;LittleFS 9.8125 MiB&lt;/span&gt;
+      &lt;span&gt;&lt;i class=&quot;swatch&quot; style=&quot;--swatch:var(--viz-series-6)&quot;&gt;&lt;/i&gt;coredump 64 KiB&lt;/span&gt;
+    &lt;/div&gt;
+
+    &lt;div class=&quot;zoom-wrap&quot;&gt;
+      &lt;div class=&quot;zoom-title&quot;&gt;
+        &lt;strong&gt;启动区放大 · 128 KiB&lt;/strong&gt;
+        &lt;span class=&quot;text-muted text-small&quot;&gt;&lt;code&gt;0x000000–0x01FFFF&lt;/code&gt;&lt;/span&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;flash-bar zoom&quot; role=&quot;img&quot; aria-label=&quot;启动区：bootloader 32 KiB、partition table 4 KiB、NVS 64 KiB、otadata 8 KiB、对齐空隙 20 KiB&quot;&gt;
+        &lt;span class=&quot;zoom-boot bar-label&quot; style=&quot;width:25%&quot;&gt;&lt;span&gt;Boot&lt;/span&gt;&lt;span class=&quot;text-small&quot;&gt;32 KiB&lt;/span&gt;&lt;/span&gt;
+        &lt;span class=&quot;zoom-table bar-label&quot; style=&quot;width:3.125%&quot; aria-label=&quot;分区表 4 KiB&quot;&gt;&lt;/span&gt;
+        &lt;span class=&quot;zoom-nvs bar-label&quot; style=&quot;width:50%&quot;&gt;&lt;span&gt;NVS&lt;/span&gt;&lt;span class=&quot;text-small&quot;&gt;64 KiB&lt;/span&gt;&lt;/span&gt;
+        &lt;span class=&quot;zoom-ota bar-label&quot; style=&quot;width:6.25%&quot;&gt;&lt;span&gt;OTA&lt;/span&gt;&lt;span class=&quot;text-small&quot;&gt;8 KiB&lt;/span&gt;&lt;/span&gt;
+        &lt;span class=&quot;zoom-gap bar-label&quot; style=&quot;width:15.625%&quot;&gt;&lt;span&gt;Gap&lt;/span&gt;&lt;span class=&quot;text-small&quot;&gt;20 KiB&lt;/span&gt;&lt;/span&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;scale-labels text-small&quot;&gt;&lt;span&gt;&lt;code&gt;0x000000&lt;/code&gt;&lt;/span&gt;&lt;span&gt;&lt;code&gt;0x008000&lt;/code&gt;&lt;/span&gt;&lt;span&gt;&lt;code&gt;0x009000&lt;/code&gt;&lt;/span&gt;&lt;span&gt;&lt;code&gt;0x019000&lt;/code&gt;&lt;/span&gt;&lt;span&gt;&lt;code&gt;0x20000&lt;/code&gt;&lt;/span&gt;&lt;/div&gt;
+    &lt;/div&gt;
+
+    &lt;div class=&quot;table-responsive&quot;&gt;
+      &lt;table class=&quot;table table-sm partition-table&quot;&gt;
+        &lt;thead&gt;&lt;tr&gt;&lt;th&gt;分区 / 区域&lt;/th&gt;&lt;th&gt;地址范围&lt;/th&gt;&lt;th class=&quot;text-end&quot;&gt;容量&lt;/th&gt;&lt;th&gt;镜像 / 数据口径&lt;/th&gt;&lt;/tr&gt;&lt;/thead&gt;
+        &lt;tbody&gt;
+          &lt;tr&gt;&lt;td&gt;&lt;strong&gt;bootloader&lt;/strong&gt;&lt;/td&gt;&lt;td class=&quot;text-nowrap&quot;&gt;&lt;code&gt;0x000000–0x007FFF&lt;/code&gt;&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;32 KiB&lt;/td&gt;&lt;td class=&quot;used-cell&quot;&gt;&lt;div class=&quot;usage-line&quot;&gt;&lt;div class=&quot;mini-meter&quot; style=&quot;--meter-color:var(--viz-series-2)&quot;&gt;&lt;span style=&quot;width:60.9375%&quot;&gt;&lt;/span&gt;&lt;/div&gt;&lt;span&gt;19,968 B · 60.94%&lt;/span&gt;&lt;/div&gt;&lt;/td&gt;&lt;/tr&gt;
+          &lt;tr&gt;&lt;td&gt;&lt;strong&gt;partition table&lt;/strong&gt;&lt;/td&gt;&lt;td class=&quot;text-nowrap&quot;&gt;&lt;code&gt;0x008000–0x008FFF&lt;/code&gt;&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;4 KiB&lt;/td&gt;&lt;td class=&quot;used-cell&quot;&gt;&lt;div class=&quot;usage-line&quot;&gt;&lt;div class=&quot;mini-meter&quot; style=&quot;--meter-color:var(--viz-series-6)&quot;&gt;&lt;span style=&quot;width:5.46875%&quot;&gt;&lt;/span&gt;&lt;/div&gt;&lt;span&gt;有效记录 224 B · 5.47%&lt;/span&gt;&lt;/div&gt;&lt;span class=&quot;text-muted text-small&quot;&gt;序列化 BIN 固定为 3,072 B，其余填充为 FF&lt;/span&gt;&lt;/td&gt;&lt;/tr&gt;
+          &lt;tr&gt;&lt;td&gt;&lt;strong&gt;nvs&lt;/strong&gt;&lt;/td&gt;&lt;td class=&quot;text-nowrap&quot;&gt;&lt;code&gt;0x009000–0x018FFF&lt;/code&gt;&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;64 KiB&lt;/td&gt;&lt;td&gt;运行期键值数据；静态占用不确定&lt;/td&gt;&lt;/tr&gt;
+          &lt;tr&gt;&lt;td&gt;&lt;strong&gt;otadata&lt;/strong&gt;&lt;/td&gt;&lt;td class=&quot;text-nowrap&quot;&gt;&lt;code&gt;0x019000–0x01AFFF&lt;/code&gt;&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;8 KiB&lt;/td&gt;&lt;td&gt;&lt;code&gt;boot_app0.bin&lt;/code&gt; 为 8,192 B；仅在正确写入 &lt;code&gt;0x19000&lt;/code&gt; 时初始化整区&lt;/td&gt;&lt;/tr&gt;
+          &lt;tr&gt;&lt;td&gt;&lt;strong&gt;对齐空隙&lt;/strong&gt;&lt;/td&gt;&lt;td class=&quot;text-nowrap&quot;&gt;&lt;code&gt;0x01B000–0x01FFFF&lt;/code&gt;&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;20 KiB&lt;/td&gt;&lt;td&gt;0 B；对齐到 App 起点&lt;/td&gt;&lt;/tr&gt;
+          &lt;tr&gt;&lt;td&gt;&lt;strong&gt;app0 / ota_0&lt;/strong&gt;&lt;/td&gt;&lt;td class=&quot;text-nowrap&quot;&gt;&lt;code&gt;0x20000–0x31FFFF&lt;/code&gt;&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;3 MiB&lt;/td&gt;&lt;td class=&quot;used-cell&quot;&gt;&lt;div class=&quot;usage-line&quot;&gt;&lt;div class=&quot;mini-meter&quot; style=&quot;--meter-color:var(--viz-series-1)&quot;&gt;&lt;span style=&quot;width:67.2048%&quot;&gt;&lt;/span&gt;&lt;/div&gt;&lt;span&gt;若写 v2.0.1：2,114,080 B · 67.20%&lt;/span&gt;&lt;/div&gt;&lt;span class=&quot;text-muted text-small&quot;&gt;未读取实机 otadata，当前活动槽未知&lt;/span&gt;&lt;/td&gt;&lt;/tr&gt;
+          &lt;tr&gt;&lt;td&gt;&lt;strong&gt;app1 / ota_1&lt;/strong&gt;&lt;/td&gt;&lt;td class=&quot;text-nowrap&quot;&gt;&lt;code&gt;0x320000–0x61FFFF&lt;/code&gt;&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;3 MiB&lt;/td&gt;&lt;td&gt;若写同一 v2.0.1 镜像，占用同为 67.20%；当前 merged.bin 此区为 FF&lt;/td&gt;&lt;/tr&gt;
+          &lt;tr&gt;&lt;td&gt;&lt;strong&gt;spiffs（LittleFS）&lt;/strong&gt;&lt;/td&gt;&lt;td class=&quot;text-nowrap&quot;&gt;&lt;code&gt;0x620000–0xFEFFFF&lt;/code&gt;&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;9.8125 MiB&lt;/td&gt;&lt;td&gt;沿用 v1.2.4 LittleFS：113 文件；净载荷 667,207 B（6.48%），非空块 929,792 B（9.04%）&lt;/td&gt;&lt;/tr&gt;
+          &lt;tr&gt;&lt;td&gt;&lt;strong&gt;coredump&lt;/strong&gt;&lt;/td&gt;&lt;td class=&quot;text-nowrap&quot;&gt;&lt;code&gt;0xFF0000–0xFFFFFF&lt;/code&gt;&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;64 KiB&lt;/td&gt;&lt;td&gt;崩溃时写入；未读取实机内容，当前占用未知（擦除态为 0 B）&lt;/td&gt;&lt;/tr&gt;
+        &lt;/tbody&gt;
+      &lt;/table&gt;
+    &lt;/div&gt;
+  &lt;/section&gt;
+
+  &lt;section aria-labelledby=&quot;sections-title&quot;&gt;
+    &lt;div class=&quot;section-head&quot;&gt;
+      &lt;div&gt;
+        &lt;div class=&quot;section-kicker text-small&quot;&gt;&lt;i data-lucide=&quot;layers-3&quot; aria-hidden=&quot;true&quot;&gt;&lt;/i&gt; ELF Sections&lt;/div&gt;
+        &lt;h2 id=&quot;sections-title&quot;&gt;装入 Flash 与运行期占用&lt;/h2&gt;
+      &lt;/div&gt;
+      &lt;p class=&quot;text-muted text-small&quot;&gt;“Flash 字节”是镜像负载；“运行字节”是链接地址空间。BSS 只在启动时清零，不占应用 BIN payload。&lt;/p&gt;
+    &lt;/div&gt;
+
+    &lt;div class=&quot;section-family-list&quot; role=&quot;img&quot; aria-label=&quot;主要 ELF section 按目标区域分组：DROM 483,508 B，IROM 1,524,940 B，IRAM 81,408 B，DRAM 116,208 B&quot;&gt;
+      &lt;div class=&quot;family-row&quot;&gt;
+        &lt;div class=&quot;family-label&quot;&gt;&lt;strong&gt;DROM / XIP&lt;/strong&gt;&lt;span class=&quot;text-muted text-small&quot;&gt;只读映射&lt;/span&gt;&lt;/div&gt;
+        &lt;div class=&quot;section-bar&quot;&gt;&lt;span class=&quot;section-appdesc&quot; style=&quot;width:0.0529%&quot;&gt;&lt;/span&gt;&lt;span class=&quot;section-rodata&quot; style=&quot;width:93.2452%&quot;&gt;&lt;/span&gt;&lt;span class=&quot;section-eh&quot; style=&quot;width:6.7019%&quot;&gt;&lt;/span&gt;&lt;/div&gt;
+        &lt;div class=&quot;family-total&quot;&gt;&lt;strong&gt;483,508 B&lt;/strong&gt;&lt;span class=&quot;text-muted text-small&quot;&gt;22.87% 镜像&lt;/span&gt;&lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;family-row&quot;&gt;
+        &lt;div class=&quot;family-label&quot;&gt;&lt;strong&gt;IROM / XIP&lt;/strong&gt;&lt;span class=&quot;text-muted text-small&quot;&gt;指令映射&lt;/span&gt;&lt;/div&gt;
+        &lt;div class=&quot;section-bar&quot;&gt;&lt;span class=&quot;section-text&quot; style=&quot;width:100%&quot;&gt;&lt;/span&gt;&lt;/div&gt;
+        &lt;div class=&quot;family-total&quot;&gt;&lt;strong&gt;1,524,940 B&lt;/strong&gt;&lt;span class=&quot;text-muted text-small&quot;&gt;72.13% 镜像&lt;/span&gt;&lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;family-row&quot;&gt;
+        &lt;div class=&quot;family-label&quot;&gt;&lt;strong&gt;IRAM&lt;/strong&gt;&lt;span class=&quot;text-muted text-small&quot;&gt;启动复制&lt;/span&gt;&lt;/div&gt;
+        &lt;div class=&quot;section-bar&quot;&gt;&lt;span class=&quot;section-vectors&quot; style=&quot;width:1.2628%&quot;&gt;&lt;/span&gt;&lt;span class=&quot;section-iramtext&quot; style=&quot;width:98.7164%&quot;&gt;&lt;/span&gt;&lt;span class=&quot;section-align&quot; style=&quot;width:0.0208%&quot;&gt;&lt;/span&gt;&lt;/div&gt;
+        &lt;div class=&quot;family-total&quot;&gt;&lt;strong&gt;81,408 B&lt;/strong&gt;&lt;span class=&quot;text-muted text-small&quot;&gt;含 17 B 对齐&lt;/span&gt;&lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;family-row&quot;&gt;
+        &lt;div class=&quot;family-label&quot;&gt;&lt;strong&gt;DRAM&lt;/strong&gt;&lt;span class=&quot;text-muted text-small&quot;&gt;复制 + 清零&lt;/span&gt;&lt;/div&gt;
+        &lt;div class=&quot;section-bar&quot;&gt;&lt;span class=&quot;section-data&quot; style=&quot;width:20.7329%&quot;&gt;&lt;/span&gt;&lt;span class=&quot;section-align&quot; style=&quot;width:0.0034%&quot;&gt;&lt;/span&gt;&lt;span class=&quot;section-bss&quot; style=&quot;width:79.2637%&quot;&gt;&lt;/span&gt;&lt;/div&gt;
+        &lt;div class=&quot;family-total&quot;&gt;&lt;strong&gt;116,208 B&lt;/strong&gt;&lt;span class=&quot;text-muted text-small&quot;&gt;含 4 B 对齐&lt;/span&gt;&lt;/div&gt;
+      &lt;/div&gt;
+    &lt;/div&gt;
+    &lt;div class=&quot;section-key text-small&quot;&gt;
+      &lt;span&gt;&lt;i class=&quot;swatch&quot; style=&quot;--swatch:var(--viz-series-1)&quot;&gt;&lt;/i&gt;Flash 执行代码&lt;/span&gt;
+      &lt;span&gt;&lt;i class=&quot;swatch&quot; style=&quot;--swatch:var(--viz-series-2)&quot;&gt;&lt;/i&gt;Flash 只读数据&lt;/span&gt;
+      &lt;span&gt;&lt;i class=&quot;swatch&quot; style=&quot;--swatch:var(--viz-series-3)&quot;&gt;&lt;/i&gt;IRAM 常驻代码&lt;/span&gt;
+      &lt;span&gt;&lt;i class=&quot;swatch&quot; style=&quot;--swatch:var(--viz-series-4)&quot;&gt;&lt;/i&gt;DRAM 数据&lt;/span&gt;
+      &lt;span&gt;&lt;i class=&quot;swatch&quot; style=&quot;--swatch:color-mix(in srgb,var(--viz-series-4) 44%,transparent)&quot;&gt;&lt;/i&gt;BSS 启动清零&lt;/span&gt;
+    &lt;/div&gt;
+
+    &lt;div class=&quot;table-responsive&quot;&gt;
+      &lt;table class=&quot;table table-sm elf-table&quot;&gt;
+        &lt;thead&gt;&lt;tr&gt;&lt;th&gt;Section&lt;/th&gt;&lt;th&gt;运行地址&lt;/th&gt;&lt;th class=&quot;text-end&quot;&gt;运行字节&lt;/th&gt;&lt;th class=&quot;text-end&quot;&gt;Flash 字节&lt;/th&gt;&lt;th&gt;语义&lt;/th&gt;&lt;/tr&gt;&lt;/thead&gt;
+        &lt;tbody&gt;
+          &lt;tr&gt;&lt;td&gt;&lt;code&gt;.iram0.vectors&lt;/code&gt;&lt;/td&gt;&lt;td&gt;&lt;code&gt;0x40374000&lt;/code&gt;&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;1,028&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;1,028&lt;/td&gt;&lt;td&gt;&lt;span class=&quot;kind-chip kind-copy&quot;&gt;复制&lt;/span&gt; 中断向量&lt;/td&gt;&lt;/tr&gt;
+          &lt;tr&gt;&lt;td&gt;&lt;code&gt;.iram0.text&lt;/code&gt;&lt;/td&gt;&lt;td&gt;&lt;code&gt;0x40374404&lt;/code&gt;&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;80,363&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;80,363&lt;/td&gt;&lt;td&gt;&lt;span class=&quot;kind-chip kind-copy&quot;&gt;复制&lt;/span&gt; 常驻代码&lt;/td&gt;&lt;/tr&gt;
+          &lt;tr&gt;&lt;td&gt;&lt;code&gt;.iram0.text_end&lt;/code&gt;&lt;/td&gt;&lt;td&gt;&lt;code&gt;0x40387DEF&lt;/code&gt;&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;17&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;0&lt;/td&gt;&lt;td&gt;&lt;span class=&quot;kind-chip kind-reserved&quot;&gt;NOLOAD&lt;/span&gt; 对齐到 IRAM 尾部&lt;/td&gt;&lt;/tr&gt;
+          &lt;tr&gt;&lt;td&gt;&lt;code&gt;.iram0.data&lt;/code&gt;&lt;/td&gt;&lt;td&gt;&lt;code&gt;0x40387E00&lt;/code&gt;&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;0&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;0&lt;/td&gt;&lt;td&gt;未使用&lt;/td&gt;&lt;/tr&gt;
+          &lt;tr&gt;&lt;td&gt;&lt;code&gt;.iram0.bss&lt;/code&gt;&lt;/td&gt;&lt;td&gt;&lt;code&gt;0x40387E00&lt;/code&gt;&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;0&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;0&lt;/td&gt;&lt;td&gt;未使用&lt;/td&gt;&lt;/tr&gt;
+          &lt;tr&gt;&lt;td&gt;&lt;code&gt;.dram0.data&lt;/code&gt;&lt;/td&gt;&lt;td&gt;&lt;code&gt;0x3FC97E00&lt;/code&gt;&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;24,092&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;24,092&lt;/td&gt;&lt;td&gt;&lt;span class=&quot;kind-chip kind-copy&quot;&gt;复制&lt;/span&gt; 已初始化全局数据&lt;/td&gt;&lt;/tr&gt;
+          &lt;tr&gt;&lt;td&gt;&lt;code&gt;.noinit&lt;/code&gt;&lt;/td&gt;&lt;td&gt;&lt;code&gt;0x3FC9DC1C&lt;/code&gt;&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;0&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;0&lt;/td&gt;&lt;td&gt;未使用；随后 4 B 对齐&lt;/td&gt;&lt;/tr&gt;
+          &lt;tr&gt;&lt;td&gt;&lt;code&gt;.dram0.bss&lt;/code&gt;&lt;/td&gt;&lt;td&gt;&lt;code&gt;0x3FC9DC20&lt;/code&gt;&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;92,112&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;0&lt;/td&gt;&lt;td&gt;&lt;span class=&quot;kind-chip kind-zero&quot;&gt;清零&lt;/span&gt; 未初始化全局数据&lt;/td&gt;&lt;/tr&gt;
+          &lt;tr&gt;&lt;td&gt;&lt;code&gt;.flash.text&lt;/code&gt;&lt;/td&gt;&lt;td&gt;&lt;code&gt;0x42000020&lt;/code&gt;&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;1,524,940&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;1,524,940&lt;/td&gt;&lt;td&gt;&lt;span class=&quot;kind-chip kind-xip&quot;&gt;XIP&lt;/span&gt; 主程序代码&lt;/td&gt;&lt;/tr&gt;
+          &lt;tr&gt;&lt;td&gt;&lt;code&gt;.flash.appdesc&lt;/code&gt;&lt;/td&gt;&lt;td&gt;&lt;code&gt;0x3C180020&lt;/code&gt;&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;256&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;256&lt;/td&gt;&lt;td&gt;&lt;span class=&quot;kind-chip kind-xip&quot;&gt;XIP&lt;/span&gt; 应用描述头&lt;/td&gt;&lt;/tr&gt;
+          &lt;tr&gt;&lt;td&gt;&lt;code&gt;.flash.rodata&lt;/code&gt;&lt;/td&gt;&lt;td&gt;&lt;code&gt;0x3C180120&lt;/code&gt;&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;450,848&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;450,848&lt;/td&gt;&lt;td&gt;&lt;span class=&quot;kind-chip kind-xip&quot;&gt;XIP&lt;/span&gt; 只读常量&lt;/td&gt;&lt;/tr&gt;
+          &lt;tr&gt;&lt;td&gt;&lt;code&gt;.eh_frame&lt;/code&gt;&lt;/td&gt;&lt;td&gt;&lt;code&gt;0x3C1EE240&lt;/code&gt;&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;32,404&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;32,404&lt;/td&gt;&lt;td&gt;&lt;span class=&quot;kind-chip kind-xip&quot;&gt;XIP&lt;/span&gt; 异常展开信息&lt;/td&gt;&lt;/tr&gt;
+          &lt;tr&gt;&lt;td&gt;&lt;code&gt;.rtc.text&lt;/code&gt;&lt;/td&gt;&lt;td&gt;&lt;code&gt;0x600FE000&lt;/code&gt;&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;0&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;0&lt;/td&gt;&lt;td&gt;未使用&lt;/td&gt;&lt;/tr&gt;
+          &lt;tr&gt;&lt;td&gt;&lt;code&gt;.rtc.force_fast&lt;/code&gt;&lt;/td&gt;&lt;td&gt;&lt;code&gt;0x600FE000&lt;/code&gt;&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;0&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;0&lt;/td&gt;&lt;td&gt;未使用&lt;/td&gt;&lt;/tr&gt;
+          &lt;tr&gt;&lt;td&gt;&lt;code&gt;.rtc_noinit&lt;/code&gt;&lt;/td&gt;&lt;td&gt;&lt;code&gt;0x50000200&lt;/code&gt;&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;0&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;0&lt;/td&gt;&lt;td&gt;未使用&lt;/td&gt;&lt;/tr&gt;
+          &lt;tr&gt;&lt;td&gt;&lt;code&gt;.rtc.force_slow&lt;/code&gt;&lt;/td&gt;&lt;td&gt;&lt;code&gt;0x50000200&lt;/code&gt;&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;32&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;32&lt;/td&gt;&lt;td&gt;&lt;span class=&quot;kind-chip kind-copy&quot;&gt;复制&lt;/span&gt; RTC SLOW 数据&lt;/td&gt;&lt;/tr&gt;
+          &lt;tr&gt;&lt;td&gt;&lt;code&gt;.rtc_reserved&lt;/code&gt;&lt;/td&gt;&lt;td&gt;&lt;code&gt;0x600FFFD8&lt;/code&gt;&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;40&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;0&lt;/td&gt;&lt;td&gt;&lt;span class=&quot;kind-chip kind-reserved&quot;&gt;保留&lt;/span&gt; RTC FAST 系统区&lt;/td&gt;&lt;/tr&gt;
+        &lt;/tbody&gt;
+      &lt;/table&gt;
+    &lt;/div&gt;
+
+    &lt;div class=&quot;capacity-note&quot;&gt;
+      &lt;strong&gt;不计入实际占用的 NOLOAD 地址占位：&lt;/strong&gt;
+      &lt;span class=&quot;text-muted text-small&quot;&gt;&lt;code&gt;.dram0.dummy&lt;/code&gt; 65,024 B · &lt;code&gt;.flash_rodata_dummy&lt;/code&gt; 1,572,864 B · &lt;code&gt;.ext_ram.dummy&lt;/code&gt; 2,097,120 B · &lt;code&gt;.flash.rodata_noload&lt;/code&gt; 24,811 B。直接读取 GNU &lt;code&gt;size&lt;/code&gt; 的总 BSS 会把这些空洞算进去，结果失真。&lt;/span&gt;
+    &lt;/div&gt;
+  &lt;/section&gt;
+
+  &lt;section aria-labelledby=&quot;segments-title&quot;&gt;
+    &lt;div class=&quot;section-head&quot;&gt;
+      &lt;div&gt;
+        &lt;div class=&quot;section-kicker text-small&quot;&gt;&lt;i data-lucide=&quot;move-right&quot; aria-hidden=&quot;true&quot;&gt;&lt;/i&gt; 镜像装载&lt;/div&gt;
+        &lt;h2 id=&quot;segments-title&quot;&gt;Flash 偏移 → 运行地址&lt;/h2&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;segment-controls&quot; aria-label=&quot;选择 OTA 分区基址&quot;&gt;
+        &lt;span class=&quot;text-muted text-small&quot;&gt;分区基址&lt;/span&gt;
+        &lt;button class=&quot;btn&quot; type=&quot;button&quot; data-slot-base=&quot;0x20000&quot; aria-pressed=&quot;true&quot;&gt;app0&lt;/button&gt;
+        &lt;button class=&quot;btn&quot; type=&quot;button&quot; data-slot-base=&quot;0x320000&quot; aria-pressed=&quot;false&quot;&gt;app1&lt;/button&gt;
+      &lt;/div&gt;
+    &lt;/div&gt;
+    &lt;p id=&quot;segment-status&quot; class=&quot;text-muted&quot; aria-live=&quot;polite&quot;&gt;当前显示 app0，P = &lt;code&gt;0x20000&lt;/code&gt;；目标运行地址不随 OTA 槽变化。&lt;/p&gt;
+
+    &lt;div class=&quot;segment-map&quot;&gt;
+      &lt;div class=&quot;image-segment&quot; data-offset=&quot;0x20&quot;&gt;
+        &lt;div class=&quot;address-block&quot;&gt;&lt;span class=&quot;text-muted text-small&quot;&gt;Flash 源&lt;/span&gt;&lt;strong&gt;&lt;code class=&quot;seg-source&quot;&gt;0x20020&lt;/code&gt;&lt;/strong&gt;&lt;/div&gt;
+        &lt;div class=&quot;segment-arrow&quot; aria-hidden=&quot;true&quot;&gt;→&lt;/div&gt;
+        &lt;div class=&quot;address-block&quot;&gt;&lt;span class=&quot;text-muted text-small&quot;&gt;DROM 目标&lt;/span&gt;&lt;strong&gt;&lt;code&gt;0x3C180020&lt;/code&gt;&lt;/strong&gt;&lt;/div&gt;
+        &lt;div class=&quot;segment-meta&quot;&gt;&lt;strong&gt;483,508 B · MMU 映射&lt;/strong&gt;&lt;span class=&quot;text-muted text-small&quot;&gt;appdesc + rodata + eh_frame，XIP&lt;/span&gt;&lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;image-segment&quot; data-offset=&quot;0x760DC&quot;&gt;
+        &lt;div class=&quot;address-block&quot;&gt;&lt;span class=&quot;text-muted text-small&quot;&gt;Flash 源&lt;/span&gt;&lt;strong&gt;&lt;code class=&quot;seg-source&quot;&gt;0x960DC&lt;/code&gt;&lt;/strong&gt;&lt;/div&gt;
+        &lt;div class=&quot;segment-arrow&quot; aria-hidden=&quot;true&quot;&gt;→&lt;/div&gt;
+        &lt;div class=&quot;address-block&quot;&gt;&lt;span class=&quot;text-muted text-small&quot;&gt;DRAM 目标&lt;/span&gt;&lt;strong&gt;&lt;code&gt;0x3FC97E00&lt;/code&gt;&lt;/strong&gt;&lt;/div&gt;
+        &lt;div class=&quot;segment-meta&quot;&gt;&lt;strong&gt;24,092 B · 复制&lt;/strong&gt;&lt;span class=&quot;text-muted text-small&quot;&gt;已初始化数据&lt;/span&gt;&lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;image-segment&quot; data-offset=&quot;0x7BF00&quot;&gt;
+        &lt;div class=&quot;address-block&quot;&gt;&lt;span class=&quot;text-muted text-small&quot;&gt;Flash 源&lt;/span&gt;&lt;strong&gt;&lt;code class=&quot;seg-source&quot;&gt;0x9BF00&lt;/code&gt;&lt;/strong&gt;&lt;/div&gt;
+        &lt;div class=&quot;segment-arrow&quot; aria-hidden=&quot;true&quot;&gt;→&lt;/div&gt;
+        &lt;div class=&quot;address-block&quot;&gt;&lt;span class=&quot;text-muted text-small&quot;&gt;IRAM 目标&lt;/span&gt;&lt;strong&gt;&lt;code&gt;0x40374000&lt;/code&gt;&lt;/strong&gt;&lt;/div&gt;
+        &lt;div class=&quot;segment-meta&quot;&gt;&lt;strong&gt;16,664 B · 复制&lt;/strong&gt;&lt;span class=&quot;text-muted text-small&quot;&gt;向量与第一段 IRAM&lt;/span&gt;&lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;image-segment&quot; data-offset=&quot;0x80020&quot;&gt;
+        &lt;div class=&quot;address-block&quot;&gt;&lt;span class=&quot;text-muted text-small&quot;&gt;Flash 源&lt;/span&gt;&lt;strong&gt;&lt;code class=&quot;seg-source&quot;&gt;0xA0020&lt;/code&gt;&lt;/strong&gt;&lt;/div&gt;
+        &lt;div class=&quot;segment-arrow&quot; aria-hidden=&quot;true&quot;&gt;→&lt;/div&gt;
+        &lt;div class=&quot;address-block&quot;&gt;&lt;span class=&quot;text-muted text-small&quot;&gt;IROM 目标&lt;/span&gt;&lt;strong&gt;&lt;code&gt;0x42000020&lt;/code&gt;&lt;/strong&gt;&lt;/div&gt;
+        &lt;div class=&quot;segment-meta&quot;&gt;&lt;strong&gt;1,524,940 B · MMU 映射&lt;/strong&gt;&lt;span class=&quot;text-muted text-small&quot;&gt;主程序代码，XIP&lt;/span&gt;&lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;image-segment&quot; data-offset=&quot;0x1F44F4&quot;&gt;
+        &lt;div class=&quot;address-block&quot;&gt;&lt;span class=&quot;text-muted text-small&quot;&gt;Flash 源&lt;/span&gt;&lt;strong&gt;&lt;code class=&quot;seg-source&quot;&gt;0x2144F4&lt;/code&gt;&lt;/strong&gt;&lt;/div&gt;
+        &lt;div class=&quot;segment-arrow&quot; aria-hidden=&quot;true&quot;&gt;→&lt;/div&gt;
+        &lt;div class=&quot;address-block&quot;&gt;&lt;span class=&quot;text-muted text-small&quot;&gt;IRAM 目标&lt;/span&gt;&lt;strong&gt;&lt;code&gt;0x40378118&lt;/code&gt;&lt;/strong&gt;&lt;/div&gt;
+        &lt;div class=&quot;segment-meta&quot;&gt;&lt;strong&gt;64,728 B · 复制&lt;/strong&gt;&lt;span class=&quot;text-muted text-small&quot;&gt;第二段 IRAM&lt;/span&gt;&lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;image-segment&quot; data-offset=&quot;0x2041D4&quot;&gt;
+        &lt;div class=&quot;address-block&quot;&gt;&lt;span class=&quot;text-muted text-small&quot;&gt;Flash 源&lt;/span&gt;&lt;strong&gt;&lt;code class=&quot;seg-source&quot;&gt;0x2241D4&lt;/code&gt;&lt;/strong&gt;&lt;/div&gt;
+        &lt;div class=&quot;segment-arrow&quot; aria-hidden=&quot;true&quot;&gt;→&lt;/div&gt;
+        &lt;div class=&quot;address-block&quot;&gt;&lt;span class=&quot;text-muted text-small&quot;&gt;RTC SLOW 目标&lt;/span&gt;&lt;strong&gt;&lt;code&gt;0x50000200&lt;/code&gt;&lt;/strong&gt;&lt;/div&gt;
+        &lt;div class=&quot;segment-meta&quot;&gt;&lt;strong&gt;32 B · 复制&lt;/strong&gt;&lt;span class=&quot;text-muted text-small&quot;&gt;RTC 持久数据&lt;/span&gt;&lt;/div&gt;
+      &lt;/div&gt;
+    &lt;/div&gt;
+
+    &lt;div class=&quot;image-sum&quot;&gt;
+      &lt;div&gt;&lt;span class=&quot;text-muted text-small&quot;&gt;XIP 映射&lt;/span&gt;&lt;strong class=&quot;number&quot;&gt;2,008,448 B&lt;/strong&gt;&lt;span class=&quot;text-muted text-small&quot;&gt;DROM + IROM&lt;/span&gt;&lt;/div&gt;
+      &lt;div&gt;&lt;span class=&quot;text-muted text-small&quot;&gt;启动复制&lt;/span&gt;&lt;strong class=&quot;number&quot;&gt;105,516 B&lt;/strong&gt;&lt;span class=&quot;text-muted text-small&quot;&gt;DRAM + IRAM + RTC&lt;/span&gt;&lt;/div&gt;
+      &lt;div&gt;&lt;span class=&quot;text-muted text-small&quot;&gt;镜像封装开销&lt;/span&gt;&lt;strong class=&quot;number&quot;&gt;116 B&lt;/strong&gt;&lt;span class=&quot;text-muted text-small&quot;&gt;头、段头、校验与对齐&lt;/span&gt;&lt;/div&gt;
+    &lt;/div&gt;
+  &lt;/section&gt;
+
+  &lt;section aria-labelledby=&quot;boot-title&quot;&gt;
+    &lt;div class=&quot;section-head&quot;&gt;
+      &lt;div&gt;
+        &lt;div class=&quot;section-kicker text-small&quot;&gt;&lt;i data-lucide=&quot;git-branch&quot; aria-hidden=&quot;true&quot;&gt;&lt;/i&gt; 启动顺序&lt;/div&gt;
+        &lt;h2 id=&quot;boot-title&quot;&gt;从复位向量到 Arduino &lt;code&gt;loop()&lt;/code&gt;&lt;/h2&gt;
+      &lt;/div&gt;
+      &lt;p class=&quot;text-muted text-small&quot;&gt;以下为分区偏移正确时的正常路径；地址来自 ROM 入口、Bootloader ELF 与应用 ELF 符号。&lt;/p&gt;
+    &lt;/div&gt;
+
+    &lt;div class=&quot;boot-flow&quot; role=&quot;img&quot; aria-label=&quot;ESP32-S3 双核启动流程，从 ROM reset 到 bootloader、应用入口、FreeRTOS 任务和 Arduino setup loop&quot;&gt;
+      &lt;div class=&quot;boot-header text-small&quot;&gt;
+        &lt;span&gt;&lt;/span&gt;&lt;span class=&quot;lane-title&quot;&gt;阶段&lt;/span&gt;&lt;span class=&quot;lane-title&quot;&gt;共享 / CPU0 主链&lt;/span&gt;&lt;span class=&quot;lane-title&quot;&gt;CPU1 分支&lt;/span&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;boot-step&quot;&gt;
+        &lt;span class=&quot;step-index&quot;&gt;01&lt;/span&gt;&lt;span class=&quot;step-phase&quot;&gt;上电复位&lt;/span&gt;
+        &lt;div class=&quot;lane-node cpu0&quot;&gt;&lt;span class=&quot;mobile-lane text-small&quot;&gt;CPU0&lt;/span&gt;&lt;strong&gt;CPU0 执行 Mask ROM Reset&lt;/strong&gt;&lt;span&gt;&lt;code&gt;0x40000400&lt;/code&gt; → 读取 Flash 启动头&lt;/span&gt;&lt;/div&gt;
+        &lt;div class=&quot;lane-empty&quot;&gt;reset / stall&lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;boot-step&quot;&gt;
+        &lt;span class=&quot;step-index&quot;&gt;02&lt;/span&gt;&lt;span class=&quot;step-phase&quot;&gt;二级引导&lt;/span&gt;
+        &lt;div class=&quot;lane-node cpu0&quot;&gt;&lt;span class=&quot;mobile-lane text-small&quot;&gt;CPU0&lt;/span&gt;&lt;strong&gt;Flash &lt;code&gt;0x000000&lt;/code&gt; → 内部 SRAM&lt;/strong&gt;&lt;span&gt;装入 1 个 DRAM 段 + 2 个 IRAM 段&lt;/span&gt;&lt;span&gt;&lt;code&gt;call_start_cpu0 @ 0x403C88B8&lt;/code&gt; → &lt;code&gt;bootloader_init @ 0x403C8928&lt;/code&gt;&lt;/span&gt;&lt;/div&gt;
+        &lt;div class=&quot;lane-empty&quot;&gt;reset / stall&lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;boot-step&quot;&gt;
+        &lt;span class=&quot;step-index&quot;&gt;03&lt;/span&gt;&lt;span class=&quot;step-phase&quot;&gt;选择分区&lt;/span&gt;
+        &lt;div class=&quot;lane-node cpu0&quot;&gt;&lt;span class=&quot;mobile-lane text-small&quot;&gt;CPU0&lt;/span&gt;&lt;strong&gt;解析 Flash 元数据&lt;/strong&gt;&lt;span&gt;table &lt;code&gt;0x008000&lt;/code&gt; → otadata &lt;code&gt;0x019000&lt;/code&gt; → 选定 app0 &lt;code&gt;0x20000&lt;/code&gt; 或 app1 &lt;code&gt;0x320000&lt;/code&gt;&lt;/span&gt;&lt;/div&gt;
+        &lt;div class=&quot;lane-empty&quot;&gt;reset / stall&lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;boot-step&quot;&gt;
+        &lt;span class=&quot;step-index&quot;&gt;04&lt;/span&gt;&lt;span class=&quot;step-phase&quot;&gt;装入镜像&lt;/span&gt;
+        &lt;div class=&quot;lane-node cpu0&quot;&gt;&lt;span class=&quot;mobile-lane text-small&quot;&gt;CPU0&lt;/span&gt;&lt;strong&gt;&lt;code&gt;bootloader_utility_load_boot_image @ 0x403CD0EC&lt;/code&gt;&lt;/strong&gt;&lt;span&gt;内部 &lt;code&gt;load_image @ 0x403CCC7C&lt;/code&gt;：校验、复制 IRAM/DRAM/RTC、映射 IROM/DROM&lt;/span&gt;&lt;/div&gt;
+        &lt;div class=&quot;lane-empty&quot;&gt;reset / stall&lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;boot-step&quot;&gt;
+        &lt;span class=&quot;step-index&quot;&gt;05&lt;/span&gt;&lt;span class=&quot;step-phase&quot;&gt;切入应用&lt;/span&gt;
+        &lt;div class=&quot;lane-node cpu0&quot;&gt;&lt;span class=&quot;mobile-lane text-small&quot;&gt;CPU0&lt;/span&gt;&lt;strong&gt;间接跳转 → 应用入口&lt;/strong&gt;&lt;span&gt;&lt;code&gt;call_start_cpu0 @ 0x40375D98&lt;/code&gt; → &lt;code&gt;system_early_init @ 0x420B4C84&lt;/code&gt;&lt;/span&gt;&lt;span&gt;清 BSS，初始化 cache / RTC / MSPI / PSRAM&lt;/span&gt;&lt;/div&gt;
+        &lt;div class=&quot;lane-empty&quot;&gt;reset / stall&lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;boot-step&quot;&gt;
+        &lt;span class=&quot;step-index&quot;&gt;06&lt;/span&gt;&lt;span class=&quot;step-phase&quot;&gt;启动 CPU1&lt;/span&gt;
+        &lt;div class=&quot;lane-node cpu0&quot;&gt;&lt;span class=&quot;mobile-lane text-small&quot;&gt;CPU0&lt;/span&gt;&lt;strong&gt;设置 APP CPU 启动入口并释放 CPU1&lt;/strong&gt;&lt;span&gt;随后通过 &lt;code&gt;g_startup_fn[0]&lt;/code&gt; 进入 CPU0 初始化&lt;/span&gt;&lt;/div&gt;
+        &lt;div class=&quot;lane-node cpu1&quot;&gt;&lt;span class=&quot;mobile-lane text-small&quot;&gt;CPU1&lt;/span&gt;&lt;strong&gt;&lt;code&gt;call_start_cpu1 @ 0x40375CA8&lt;/code&gt;&lt;/strong&gt;&lt;span&gt;完成 &lt;code&gt;bootloader_init_mem&lt;/code&gt;、中断与 cache-error 基础设置，等待 &lt;code&gt;s_resume_cores&lt;/code&gt;&lt;/span&gt;&lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;boot-step&quot;&gt;
+        &lt;span class=&quot;step-index&quot;&gt;07&lt;/span&gt;&lt;span class=&quot;step-phase&quot;&gt;每核初始化&lt;/span&gt;
+        &lt;div class=&quot;lane-node cpu0&quot;&gt;&lt;span class=&quot;mobile-lane text-small&quot;&gt;CPU0&lt;/span&gt;&lt;strong&gt;&lt;code&gt;start_cpu0 @ 0x420B5B18&lt;/code&gt;&lt;/strong&gt;&lt;span&gt;CORE 初始化 + 全局构造 → &lt;code&gt;startup_resume_other_cores @ 0x420B4EF8&lt;/code&gt;&lt;/span&gt;&lt;/div&gt;
+        &lt;div class=&quot;lane-node cpu1&quot;&gt;&lt;span class=&quot;mobile-lane text-small&quot;&gt;CPU1&lt;/span&gt;&lt;strong&gt;等待 CPU0 放行&lt;/strong&gt;&lt;span&gt;尚未进入 secondary init&lt;/span&gt;&lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;boot-step&quot;&gt;
+        &lt;span class=&quot;step-index&quot;&gt;08&lt;/span&gt;&lt;span class=&quot;step-phase&quot;&gt;双核汇合&lt;/span&gt;
+        &lt;div class=&quot;lane-node cpu0&quot;&gt;&lt;span class=&quot;mobile-lane text-small&quot;&gt;CPU0&lt;/span&gt;&lt;strong&gt;放行并等待 barrier&lt;/strong&gt;&lt;span&gt;两核完成 SECONDARY init&lt;/span&gt;&lt;/div&gt;
+        &lt;div class=&quot;lane-node cpu1&quot;&gt;&lt;span class=&quot;mobile-lane text-small&quot;&gt;CPU1&lt;/span&gt;&lt;strong&gt;&lt;code&gt;g_startup_fn[1]&lt;/code&gt; → &lt;code&gt;start_cpu_other_cores @ 0x403762DC&lt;/code&gt;&lt;/strong&gt;&lt;span&gt;执行 CPU1 secondary init&lt;/span&gt;&lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;boot-step&quot;&gt;
+        &lt;span class=&quot;step-index&quot;&gt;09&lt;/span&gt;&lt;span class=&quot;step-phase&quot;&gt;调度器&lt;/span&gt;
+        &lt;div class=&quot;lane-node cpu0&quot;&gt;&lt;span class=&quot;mobile-lane text-small&quot;&gt;CPU0&lt;/span&gt;&lt;strong&gt;&lt;code&gt;esp_startup_start_app @ 0x42173698&lt;/code&gt;&lt;/strong&gt;&lt;span&gt;启动 CPU0 FreeRTOS scheduler&lt;/span&gt;&lt;/div&gt;
+        &lt;div class=&quot;lane-node cpu1&quot;&gt;&lt;span class=&quot;mobile-lane text-small&quot;&gt;CPU1&lt;/span&gt;&lt;strong&gt;&lt;code&gt;esp_startup_start_app_other_cores @ 0x421736F0&lt;/code&gt;&lt;/strong&gt;&lt;span&gt;启动 CPU1 FreeRTOS scheduler&lt;/span&gt;&lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;boot-step&quot;&gt;
+        &lt;span class=&quot;step-index&quot;&gt;10&lt;/span&gt;&lt;span class=&quot;step-phase&quot;&gt;用户入口&lt;/span&gt;
+        &lt;div class=&quot;lane-node cpu0&quot;&gt;&lt;span class=&quot;mobile-lane text-small&quot;&gt;CPU0&lt;/span&gt;&lt;strong&gt;&lt;code&gt;main_task @ 0x42173640&lt;/code&gt;&lt;/strong&gt;&lt;span&gt;栈 4,608 B → &lt;code&gt;app_main @ 0x420B0DF8&lt;/code&gt;&lt;/span&gt;&lt;/div&gt;
+        &lt;div class=&quot;lane-empty&quot;&gt;scheduler 运行&lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;boot-step&quot;&gt;
+        &lt;span class=&quot;step-index&quot;&gt;11&lt;/span&gt;&lt;span class=&quot;step-phase&quot;&gt;Arduino&lt;/span&gt;
+        &lt;div class=&quot;lane-node cpu0&quot;&gt;&lt;span class=&quot;mobile-lane text-small&quot;&gt;CPU0&lt;/span&gt;&lt;strong&gt;&lt;code&gt;app_main&lt;/code&gt; 创建 Arduino 任务&lt;/strong&gt;&lt;span&gt;任务固定到 Core 1&lt;/span&gt;&lt;/div&gt;
+        &lt;div class=&quot;lane-node cpu1&quot;&gt;&lt;span class=&quot;mobile-lane text-small&quot;&gt;CPU1&lt;/span&gt;&lt;strong&gt;&lt;code&gt;loopTask @ 0x420B0D9C&lt;/code&gt;&lt;/strong&gt;&lt;span&gt;栈 8,192 B → &lt;code&gt;setup @ 0x42008BE8&lt;/code&gt; → &lt;code&gt;loop @ 0x420095B8&lt;/code&gt; 循环&lt;/span&gt;&lt;/div&gt;
+      &lt;/div&gt;
+    &lt;/div&gt;
+  &lt;/section&gt;
+
+  &lt;section class=&quot;card risk-card&quot; role=&quot;alert&quot; aria-labelledby=&quot;risk-title&quot;&gt;
+    &lt;div class=&quot;risk-heading&quot;&gt;&lt;i data-lucide=&quot;triangle-alert&quot; aria-hidden=&quot;true&quot;&gt;&lt;/i&gt;&lt;h2 id=&quot;risk-title&quot;&gt;当前 merged.bin 无法按自定义分区表正常启动&lt;/h2&gt;&lt;/div&gt;
+    &lt;div class=&quot;offset-compare&quot;&gt;
+      &lt;div class=&quot;offset-line bad&quot;&gt;
+        &lt;strong&gt;当前 flash_args / merged.bin&lt;/strong&gt;
+        &lt;div class=&quot;offset-sequence&quot;&gt;&lt;code&gt;bootloader@0x000000&lt;/code&gt;&lt;span&gt;→&lt;/span&gt;&lt;code&gt;table@0x008000&lt;/code&gt;&lt;span&gt;→&lt;/span&gt;&lt;code&gt;boot_app0@0x00E000&lt;/code&gt;&lt;span&gt;→&lt;/span&gt;&lt;code&gt;app@0x010000&lt;/code&gt;&lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;offset-line good&quot;&gt;
+        &lt;strong&gt;与分区表一致的完整烧录布局（含文件系统）&lt;/strong&gt;
+        &lt;div class=&quot;offset-sequence&quot;&gt;&lt;code&gt;bootloader@0x000000&lt;/code&gt;&lt;span&gt;→&lt;/span&gt;&lt;code&gt;table@0x008000&lt;/code&gt;&lt;span&gt;→&lt;/span&gt;&lt;code&gt;boot_app0@0x019000&lt;/code&gt;&lt;span&gt;→&lt;/span&gt;&lt;code&gt;app0@0x20000&lt;/code&gt;&lt;span&gt;→&lt;/span&gt;&lt;code&gt;LittleFS@0x620000&lt;/code&gt;&lt;/div&gt;
+      &lt;/div&gt;
+    &lt;/div&gt;
+    &lt;div class=&quot;risk-facts&quot;&gt;
+      &lt;div&gt;&lt;span class=&quot;text-muted text-small&quot;&gt;错误写入跨度&lt;/span&gt;&lt;strong&gt;&lt;code&gt;0x10000–0x21421F&lt;/code&gt;&lt;/strong&gt;&lt;span class=&quot;text-small&quot;&gt;&lt;code&gt;boot_app0@0xE000&lt;/code&gt; 与应用共同覆盖后续区域&lt;/span&gt;&lt;/div&gt;
+      &lt;div&gt;&lt;span class=&quot;text-muted text-small&quot;&gt;期望镜像头&lt;/span&gt;&lt;strong class=&quot;text-destructive&quot;&gt;&lt;code&gt;0x20000 ≠ E9&lt;/code&gt;&lt;/strong&gt;&lt;span class=&quot;text-small&quot;&gt;Bootloader 找不到合法 app0&lt;/span&gt;&lt;/div&gt;
+      &lt;div&gt;&lt;span class=&quot;text-muted text-small&quot;&gt;影响范围&lt;/span&gt;&lt;strong class=&quot;text-destructive&quot;&gt;NVS / otadata / gap / app0 起始区&lt;/strong&gt;&lt;span class=&quot;text-small&quot;&gt;且当前 merged.bin 的 &lt;code&gt;0x620000&lt;/code&gt; 仍为 FF，未包含 LittleFS；网页 OTA 路径不受硬编码偏移影响&lt;/span&gt;&lt;/div&gt;
+    &lt;/div&gt;
+  &lt;/section&gt;
+
+  &lt;footer class=&quot;source-strip text-small&quot;&gt;
+    &lt;span&gt;证据：v2.0.1 OTA BIN&lt;/span&gt;
+    &lt;span&gt;匹配 ELF SHA256 &lt;code&gt;161af859…&lt;/code&gt;&lt;/span&gt;
+    &lt;span&gt;MAP / sdkconfig / build.options.json&lt;/span&gt;
+    &lt;span&gt;partitions.csv / flash_args / merged.bin&lt;/span&gt;
+    &lt;span&gt;LittleFS：沿用 v1.2.4 · 113 files&lt;/span&gt;
+  &lt;/footer&gt;
+&lt;/main&gt;
+
+&lt;script&gt;
+(() =&gt; {
+  const root = document.getElementById(&#x27;esp32-s3-memory-boot-map&#x27;);
+  if (!root) return;
+
+  const buttons = [...root.querySelectorAll(&#x27;[data-slot-base]&#x27;)];
+  const rows = [...root.querySelectorAll(&#x27;.image-segment[data-offset]&#x27;)];
+  const status = root.querySelector(&#x27;#segment-status&#x27;);
+
+  const formatHex = (value) =&gt; `0x${value.toString(16).toUpperCase()}`;
+
+  const selectSlot = (button) =&gt; {
+    const base = Number(button.dataset.slotBase);
+    const label = button.textContent.trim();
+
+    buttons.forEach((candidate) =&gt; {
+      candidate.setAttribute(&#x27;aria-pressed&#x27;, String(candidate === button));
+    });
+
+    rows.forEach((row) =&gt; {
+      const source = row.querySelector(&#x27;.seg-source&#x27;);
+      const offset = Number(row.dataset.offset);
+      if (source) source.textContent = formatHex(base + offset);
+    });
+
+    if (status) {
+      status.innerHTML = `当前显示 ${label}，P = &lt;code&gt;${formatHex(base)}&lt;/code&gt;；目标运行地址不随 OTA 槽变化。`;
+    }
+  };
+
+  buttons.forEach((button) =&gt; {
+    button.addEventListener(&#x27;click&#x27;, () =&gt; selectSlot(button));
+  });
+})();
+&lt;/script&gt;
+
+&lt;script src=&quot;https://unpkg.com/@floating-ui/core@1.7.3/dist/floating-ui.core.umd.min.js&quot;&gt;&lt;/script&gt;
+&lt;script src=&quot;https://unpkg.com/@floating-ui/dom@1.7.4/dist/floating-ui.dom.umd.min.js&quot;&gt;&lt;/script&gt;
+&lt;script&gt;
+(() =&gt; {
+  if (window.FloatingUIDOM == null) {
+    return;
+  }
+  const { autoUpdate, computePosition, flip, offset, shift, size } =
+    window.FloatingUIDOM;
+  const tooltipPlacements = new Set([&quot;top&quot;, &quot;right&quot;, &quot;bottom&quot;, &quot;left&quot;]);
+  const tooltipId = `codex-visualization-tooltip-${
+    window.crypto?.randomUUID?.() ?? Date.now().toString(36)
+  }`;
+  const tooltipGap = 5;
+  const hoverDelay = 700;
+  const skipDelay = 300;
+  let activeTrigger = null;
+  let pendingTrigger = null;
+  let tooltip = null;
+  let openTimeout = null;
+  let autoUpdateCleanup = null;
+  let positionRequest = 0;
+  let skipDelayUntil = 0;
+
+  const getTrigger = (target) =&gt;
+    target?.nodeType === Node.ELEMENT_NODE
+      ? target.closest(&quot;[data-tooltip]&quot;)
+      : null;
+  const containsTarget = (trigger, target) =&gt;
+    target?.nodeType != null &amp;&amp; trigger.contains(target);
+  const getContent = (trigger) =&gt;
+    trigger.getAttribute(&quot;data-tooltip&quot;)?.trim() ?? &quot;&quot;;
+  const getPlacement = (trigger) =&gt; {
+    const placement = trigger.getAttribute(&quot;data-tooltip-placement&quot;);
+    return tooltipPlacements.has(placement) ? placement : &quot;top&quot;;
+  };
+  const getTooltip = () =&gt; {
+    if (tooltip == null) {
+      tooltip = document.createElement(&quot;div&quot;);
+      tooltip.id = tooltipId;
+      tooltip.className = &quot;tooltip&quot;;
+      tooltip.setAttribute(&quot;role&quot;, &quot;tooltip&quot;);
+    }
+    return tooltip;
+  };
+  const setDescribedBy = (trigger, described) =&gt; {
+    const ids = new Set(
+      (trigger.getAttribute(&quot;aria-describedby&quot;) ?? &quot;&quot;)
+        .split(/\s+/)
+        .filter(Boolean),
+    );
+    if (described) {
+      ids.add(tooltipId);
+    } else {
+      ids.delete(tooltipId);
+    }
+    if (ids.size === 0) {
+      trigger.removeAttribute(&quot;aria-describedby&quot;);
+    } else {
+      trigger.setAttribute(&quot;aria-describedby&quot;, [...ids].join(&quot; &quot;));
+    }
+  };
+  const clearOpenTimeout = () =&gt; {
+    if (openTimeout != null) {
+      window.clearTimeout(openTimeout);
+      openTimeout = null;
+    }
+    pendingTrigger = null;
+  };
+  const closeTooltip = (activateSkipDelay = true) =&gt; {
+    clearOpenTimeout();
+    positionRequest += 1;
+    autoUpdateCleanup?.();
+    autoUpdateCleanup = null;
+    if (activeTrigger == null) {
+      return;
+    }
+    setDescribedBy(activeTrigger, false);
+    activeTrigger = null;
+    tooltip?.remove();
+    if (activateSkipDelay) {
+      skipDelayUntil = Date.now() + skipDelay;
+    }
+  };
+  const updatePosition = (trigger, floating) =&gt; {
+    const request = ++positionRequest;
+    void computePosition(trigger, floating, {
+      middleware: [
+        offset(tooltipGap),
+        flip({ padding: tooltipGap }),
+        shift({ padding: tooltipGap }),
+        size({
+          padding: tooltipGap,
+          apply({ availableHeight, availableWidth, elements }) {
+            elements.floating.style.setProperty(
+              &quot;--tooltip-available-width&quot;,
+              `${Math.max(0, availableWidth)}px`,
+            );
+            elements.floating.style.setProperty(
+              &quot;--tooltip-available-height&quot;,
+              `${Math.max(0, availableHeight)}px`,
+            );
+          },
+        }),
+      ],
+      placement: getPlacement(trigger),
+      strategy: &quot;fixed&quot;,
+    })
+      .then(({ x, y }) =&gt; {
+        if (activeTrigger !== trigger || request !== positionRequest) {
+          return;
+        }
+        const scale = window.devicePixelRatio || 1;
+        floating.style.transform = `translate(${Math.round(x * scale) / scale}px, ${Math.round(y * scale) / scale}px)`;
+        floating.style.visibility = &quot;visible&quot;;
+      })
+      .catch(() =&gt; {
+        if (activeTrigger === trigger &amp;&amp; request === positionRequest) {
+          closeTooltip(false);
+        }
+      });
+  };
+  const openTooltip = (trigger) =&gt; {
+    const content = getContent(trigger);
+    if (!trigger.isConnected || content.length === 0) {
+      return;
+    }
+    clearOpenTimeout();
+    if (activeTrigger === trigger) {
+      return;
+    }
+    closeTooltip();
+    const floating = getTooltip();
+    floating.textContent = content;
+    floating.style.visibility = &quot;hidden&quot;;
+    floating.style.transform = &quot;translate(0, 0)&quot;;
+    document.body.appendChild(floating);
+    activeTrigger = trigger;
+    setDescribedBy(trigger, true);
+    autoUpdateCleanup = autoUpdate(trigger, floating, () =&gt; {
+      updatePosition(trigger, floating);
+    });
+  };
+  const requestOpen = (trigger, immediate = false) =&gt; {
+    if (
+      getContent(trigger).length === 0 ||
+      activeTrigger === trigger ||
+      pendingTrigger === trigger
+    ) {
+      return;
+    }
+    clearOpenTimeout();
+    pendingTrigger = trigger;
+    const delay =
+      immediate || activeTrigger != null || Date.now() &lt; skipDelayUntil
+        ? 0
+        : hoverDelay;
+    if (delay === 0) {
+      openTooltip(trigger);
+      return;
+    }
+    openTimeout = window.setTimeout(() =&gt; {
+      openTimeout = null;
+      pendingTrigger = null;
+      openTooltip(trigger);
+    }, delay);
+  };
+  const handlePointerOpen = (event) =&gt; {
+    if (event.pointerType === &quot;touch&quot;) {
+      return;
+    }
+    const trigger = getTrigger(event.target);
+    if (trigger == null || containsTarget(trigger, event.relatedTarget)) {
+      return;
+    }
+    requestOpen(trigger);
+  };
+  const handleLeave = (event) =&gt; {
+    const trigger = getTrigger(event.target);
+    if (trigger == null || containsTarget(trigger, event.relatedTarget)) {
+      return;
+    }
+    if (activeTrigger === trigger || pendingTrigger === trigger) {
+      closeTooltip();
+    }
+  };
+  const handleFocusIn = (event) =&gt; {
+    const trigger = getTrigger(event.target);
+    if (trigger?.matches(&quot;:focus-visible&quot;)) {
+      requestOpen(trigger, true);
+    }
+  };
+  const handleKeyDown = (event) =&gt; {
+    if (event.key === &quot;Escape&quot;) {
+      closeTooltip();
+    }
+  };
+  const handleContextMenu = (event) =&gt; {
+    const trigger = getTrigger(event.target);
+    if (activeTrigger === trigger || pendingTrigger === trigger) {
+      closeTooltip();
+    }
+  };
+  const destroy = () =&gt; {
+    closeTooltip(false);
+    document.removeEventListener(&quot;pointerover&quot;, handlePointerOpen);
+    document.removeEventListener(&quot;pointerout&quot;, handleLeave);
+    document.removeEventListener(&quot;focusin&quot;, handleFocusIn);
+    document.removeEventListener(&quot;focusout&quot;, handleLeave);
+    document.removeEventListener(&quot;keydown&quot;, handleKeyDown);
+    document.removeEventListener(&quot;contextmenu&quot;, handleContextMenu);
+    tooltip = null;
+  };
+
+  document.addEventListener(&quot;pointerover&quot;, handlePointerOpen);
+  document.addEventListener(&quot;pointerout&quot;, handleLeave);
+  document.addEventListener(&quot;focusin&quot;, handleFocusIn);
+  document.addEventListener(&quot;focusout&quot;, handleLeave);
+  document.addEventListener(&quot;keydown&quot;, handleKeyDown);
+  document.addEventListener(&quot;contextmenu&quot;, handleContextMenu);
+  window.addEventListener(&quot;pagehide&quot;, destroy, { once: true });
+})();
+&lt;/script&gt;
+&lt;script id=&quot;codex-visualization-lucide&quot; async src=&quot;https://unpkg.com/lucide@1.17.0/dist/umd/lucide.js&quot;&gt;&lt;/script&gt;
+&lt;script&gt;
+(() =&gt; {
+  const initialize = () =&gt; {
+    globalThis.lucide?.createIcons({ attrs: { width: 16, height: 16 } });
+  };
+  if (globalThis.lucide != null) {
+    initialize();
+    return;
+  }
+  document
+    .getElementById(&quot;codex-visualization-lucide&quot;)
+    ?.addEventListener(&quot;load&quot;, initialize, { once: true });
+})();
+&lt;/script&gt;
+
+&lt;/body&gt;
+&lt;/html&gt;
+"></iframe>
+</body>
+</html>
