@@ -8,7 +8,7 @@ sketch_dir=${ESP32_SKETCH_DIR:-"${project_root}/sources/esp32-network-radio"}
 arduino_cli=${ARDUINO_CLI:-arduino-cli}
 fqbn=${ESP32_FQBN:-"esp32:esp32:esp32s3:UploadSpeed=460800,USBMode=hwcdc,CDCOnBoot=default,MSCOnBoot=default,DFUOnBoot=default,UploadMode=default,CPUFreq=240,FlashMode=qio,FlashSize=16M,PartitionScheme=app3M_fat9M_16MB,DebugLevel=none,PSRAM=opi,LoopCore=1,EventsCore=1,EraseFlash=none,JTAGAdapter=default,ZigbeeMode=default"}
 project_name="$(basename "$sketch_dir").ino"
-build_path=${ESP32_BUILD_PATH:-"${project_root}/build/${project_name%.ino}/esp32.esp32.esp32s3"}
+build_path=${ESP32_BUILD_PATH:-"${project_root}/build/${project_name%.ino}"}
 upload_requested=false
 upload_port=
 compile_args=()
