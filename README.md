@@ -1,61 +1,87 @@
 # ESP32-S3 网络收音机
 
-当前维护版本为 **3.2.1-status-lcd**：ESP32-S3 网络收音机，带管理网页、Wi-Fi
-多网络保存、OTA、LittleFS 电台台标与 ST7735R 128×128 状态屏。
+当前版本为 **4.0.0**。项目基于 ESP32-S3 N16R8，实现网络电台播放、手机与桌面网页控制、管理后台、Wi-Fi 自动恢复、OTA、诊断日志、LittleFS 台标和板载 RGB 状态灯。
 
-## 项目结构
+## 目录结构
 
 ```text
-firmware/
-  network_radio_v3_2_status_lcd/  当前开发与烧录源码
-  network_radio_v3_1_lcd/         LCD 初始版本
-  network_radio_v*/               历史版本（保留以便回溯）
-tools/                            编译、烧录布局校验工具
-diagram/                          接线图
-release/                          可独立构建的版本化备份包
-build/                            本地构建输出（不纳入 Git）
+sources/esp32-network-radio/  Arduino 源码、分区表和台标资源
+docs/                         项目与硬件参考文档
+build/                        本地编译中间文件
+release/                      正式发布的版本化 ZIP 包
+tools/                        编译、烧录和布局校验工具
 ```
 
-日常开发只修改 `firmware/network_radio_v3_2_status_lcd/`；不要直接修改
-`release/` 中的历史副本。每次发布后，再从当前固件目录制作独立源码包。
+升级版本时直接修改 `sources/esp32-network-radio/`，不要新建版本目录。每次版本变更必须同步更新根目录的 `CHANGELOG.md`。
 
-## 当前版本功能
+## 主要功能
 
-- ST7735R 128×128，SPI 1 MHz，180° 显示；上电红、绿、蓝、白、黑自检后显示 `TFT OK`；
-- 当前电台 JPEG 台标、中文居中电台名、超长名称跑马灯、音量条；
-- Wi-Fi 配置页支持扫描、保存多个网络并自动依次尝试连接；
-- 网页管理、播放列表、OTA、LittleFS、内置电台和 WS2812 状态灯；
-- 不使用 microSD。
+- HLS/AAC 网络电台播放、播放列表管理和断线自动恢复；
+- 普通播放器 `/` 与管理后台 `/admin`；
+- Wi-Fi 扫描、配网热点、自动重连和 mDNS 访问；
+- 网页 OTA、诊断日志、管理密码及恢复出厂设置；
+- 113 个 LittleFS 电台台标和 WS2812B 状态指示。
 
-详细硬件接线、LCD 行为与升级注意事项见
-[当前固件说明](firmware/network_radio_v3_2_status_lcd/README.md)。
+设备联网后访问：
 
-## 构建当前版本
+- 播放器：`http://network-radio.local/`
+- 管理后台：`http://network-radio.local/admin`
 
-需要 `arduino-cli`、ESP32 Arduino Core 3.3.11、`ESP32-audioI2S` 和
-`TJpg_Decoder` 1.1.0。根目录的构建脚本默认指向当前版本：
+## 硬件与接线
+
+目标开发板为 ESP32-S3 N16R8：16 MiB Quad Flash、8 MiB OPI PSRAM。音频使用 MAX98357A 单声道 I²S 功放。
+
+| ESP32-S3 | MAX98357A | 用途 |
+| --- | --- | --- |
+| GPIO4 | BCLK | I²S 位时钟 |
+| GPIO5 | LRC/LRCLK | I²S 帧时钟 |
+| GPIO6 | DIN | I²S 音频数据 |
+| GND | GND | 公共地 |
+| 5 V 电源 | VIN | 功放供电，需留足扬声器电流 |
+
+扬声器只能跨接 `OUT+` 与 `OUT-`，任何一端都不能接地。板载 WS2812B 数据脚为 GPIO48。串口下载和日志使用 CH340C 对应的 USB-C 接口，默认波特率为 115200；固件上传建议使用 460800。
+
+状态灯含义：红色呼吸表示连接或缓冲，蓝色呼吸表示正常播放，红色快闪表示网络或播放错误，绿色慢闪表示 OTA，熄灭表示暂停。
+
+## Flash 分区
+
+固件使用 16 MiB Flash 和双 OTA 应用槽：
+
+| 分区 | 偏移 | 大小 | 用途 |
+| --- | ---: | ---: | --- |
+| NVS | `0x9000` | `0x10000` | Wi-Fi、播放列表及用户设置 |
+| OTA Data | `0x19000` | `0x2000` | OTA 启动状态 |
+| APP0 | `0x20000` | `0x300000` | 当前/候选应用 |
+| APP1 | `0x320000` | `0x300000` | OTA 应用槽 |
+| LittleFS | `0x620000` | `0x9D0000` | 台标及持久化文件 |
+| Core Dump | `0xFF0000` | `0x10000` | 崩溃转储 |
+
+网页 OTA 只能上传应用 `.bin`，不能上传 16 MiB 完整镜像。整片擦除后必须同时写入启动程序、分区表、OTA 引导、应用和 LittleFS 镜像。
+
+## 首次启动或恢复出厂后的配置
+
+1. 设备启动后会创建 `Radio-XXXX` 热点，后四位来自设备标识；密码为 `radio-setup`。
+2. 使用手机或电脑连接该热点。若配网页面未自动打开，访问 `http://192.168.4.1/admin`。
+3. 在后台点击“扫描网络”，选择 **2.4 GHz** Wi-Fi，输入密码并保存。ESP32-S3 不能连接纯 5 GHz 网络。
+4. 设备重启并联网后，将手机或电脑切回同一局域网，访问 `http://network-radio.local/`；若 `.local` 不可用，从路由器查询设备 IP。
+5. 初始后台没有管理密码。建议在可信局域网中设置 8–63 位密码，登录用户名固定为 `admin`。
+6. 配置电台、默认音量与页面主题，并测试播放。配网热点联网后仍会保留，密码与后台管理密码相互独立。
+
+恢复出厂设置会清除 Wi-Fi、电台列表、音量、主题和管理密码，然后重启；内置台标资源不会因此删除。
+
+## 构建与上传
+
+依赖 `arduino-cli`、ESP32 Arduino Core 3.3.11 和 `ESP32-audioI2S`：
 
 ```bash
 arduino-cli core update-index
 arduino-cli core install esp32:esp32@3.3.11
 arduino-cli lib install "ESP32-audioI2S"
-arduino-cli lib install "TJpg_Decoder@1.1.0"
 
 ./tools/build-firmware.sh
-```
-
-构建输出在 `build/network_radio_v3_2_status_lcd/`，并会自动校验 16 MiB
-Flash 布局。烧录连接的开发板：
-
-```bash
 ./tools/build-firmware.sh --upload --port /dev/cu.usbserial-XXXX
 ```
 
-## 完整可移植备份
+输出位于 `build/esp32-network-radio/`，构建脚本会自动校验 16 MiB Flash 布局。正式发布包存放在 `release/`；仓库中现有的上一版发布包为 `network-radio-v3.0.2-source.zip`。
 
-[`release/network-radio-v3.2.1-status-lcd-source/`](release/network-radio-v3.2.1-status-lcd-source/)
-是经过独立目录构建验证的源码包，包含固定版本的两项依赖库、113 个台标和 `build.sh`。
-在另一台电脑下载或解压后，进入该目录运行 `./build.sh` 即可构建，不依赖本仓库其余内容。
-
-生成的 `build/`、`binaries/` 和固件镜像均不提交到 Git；Wi-Fi 密码、管理员密码和
-私有流地址也不得提交。
+不要提交 Wi-Fi 密码、管理员密码、私有流地址或设备专属密钥。

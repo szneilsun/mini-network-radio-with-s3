@@ -1,4 +1,0 @@
-*.bin
-*.elf
-*.map
-config/network_config.h

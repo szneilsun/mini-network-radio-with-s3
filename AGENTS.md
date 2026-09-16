@@ -2,9 +2,9 @@
 
 ## Project Structure & Module Organization
 
-`firmware/` contains versioned Arduino sketches. Each sketch lives in a directory whose name matches its `.ino` entry point, for example `firmware/network_radio_v3_0/network_radio_v3_0.ino`. Keep version-specific partition tables, generated headers, web assets, and README notes beside that sketch. The current standalone release is `network_radio_v3_0`; earlier directories document incremental features and compatibility history.
+`sources/esp32-network-radio/` contains the single maintained Arduino sketch, `esp32-network-radio.ino`, its partition table, and LittleFS assets under `data/logos/`. Project documentation belongs in the root `README.md` or `docs/`. Update the source directory in place for new versions; do not create versioned source directories.
 
-`tools/` holds the build, flash-argument, and flash-layout scripts. `hardware-web/` is a static hardware reference site; place shared styling and images in `hardware-web/assets/`. Root-level Markdown files contain board documentation. Generated firmware belongs under `build/` and should not be edited manually.
+`tools/` holds build and flash-layout scripts. `docs/` contains project and hardware documentation. `build/` is exclusively for local intermediate output. `release/` contains only verified, versioned ZIP packages; do not place extracted packages or device backups there.
 
 ## Build, Test, and Development Commands
 
@@ -13,16 +13,17 @@ Install `arduino-cli`, the Espressif ESP32 core, and the libraries included by t
 ```bash
 ./tools/build-firmware.sh
 ./tools/build-firmware.sh --upload --port /dev/cu.usbserial-XXXX
-ESP32_SKETCH_DIR="$PWD/firmware/network_radio_v10_user_admin_ui" ./tools/build-firmware.sh
 ```
 
-The first command compiles the default V3 sketch, exports binaries, and verifies the 16 MiB flash image. The second also flashes a connected ESP32-S3. The environment-variable form builds another version; that sketch must include `partitions.csv`.
+The first command compiles the current sketch into `build/` and verifies the 16 MiB flash image. The second also flashes a connected ESP32-S3.
 
-Preview documentation pages with `python3 -m http.server 8000 -d hardware-web`, then open `http://localhost:8000`.
+Preview documentation pages with `python3 -m http.server 8000 -d docs/hardware-web`, then open `http://localhost:8000`.
 
 ## Coding Style & Naming Conventions
 
 Follow existing Arduino/C++ style: two-space indentation, opening braces on the same line, `camelCase` functions and variables, `PascalCase` types, and `kPascalCase` constants. Use uppercase snake case for compile-time macros. Prefer fixed-width integer types for hardware-facing values. Shell scripts must use Bash, quote expansions, and retain `set -euo pipefail`. Use lowercase kebab-case for web files and snake_case for firmware directories.
+
+Whenever the firmware version changes, add a matching entry to `CHANGELOG.md`. Record user-visible features, fixes, compatibility changes, hardware requirements, and upgrade notes; keep unreleased work under `未发布`.
 
 ## Testing Guidelines
 

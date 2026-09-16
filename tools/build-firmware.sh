@@ -2,9 +2,9 @@
 set -euo pipefail
 
 project_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-# The current maintained firmware. Older sketches remain selectable through
-# ESP32_SKETCH_DIR for compatibility and regression checks.
-sketch_dir=${ESP32_SKETCH_DIR:-"${project_root}/firmware/network_radio_v3_2_status_lcd"}
+# The repository keeps one maintained sketch in sources/. ESP32_SKETCH_DIR is
+# available only for temporary compatibility or regression builds.
+sketch_dir=${ESP32_SKETCH_DIR:-"${project_root}/sources/esp32-network-radio"}
 arduino_cli=${ARDUINO_CLI:-arduino-cli}
 fqbn=${ESP32_FQBN:-"esp32:esp32:esp32s3:UploadSpeed=460800,USBMode=hwcdc,CDCOnBoot=default,MSCOnBoot=default,DFUOnBoot=default,UploadMode=default,CPUFreq=240,FlashMode=qio,FlashSize=16M,PartitionScheme=app3M_fat9M_16MB,DebugLevel=none,PSRAM=opi,LoopCore=1,EventsCore=1,EraseFlash=none,JTAGAdapter=default,ZigbeeMode=default"}
 project_name="$(basename "$sketch_dir").ino"
@@ -58,7 +58,6 @@ if (( ${#compile_args[@]} > 0 )); then
   "$arduino_cli" compile \
     --fqbn "$fqbn" \
     --build-path "$build_path" \
-    --export-binaries \
     --build-property "$merge_recipe" \
     --build-property "$flash_args_recipe" \
     "${compile_args[@]}" \
@@ -67,7 +66,6 @@ else
   "$arduino_cli" compile \
     --fqbn "$fqbn" \
     --build-path "$build_path" \
-    --export-binaries \
     --build-property "$merge_recipe" \
     --build-property "$flash_args_recipe" \
     "$sketch_dir"
