@@ -1,5 +1,5 @@
 /*
- * Network Radio 4.0.0 standalone Arduino sketch.
+ * Network Radio 4.4.0 standalone Arduino sketch.
  * Project-local source dependencies are inlined in this file.
  *
  * The superseded V4 test-tone/I2S path and unused legacy web pages have
@@ -9,7 +9,7 @@
 
 /* Network Radio 3.0: player UI, administration UI, and WS2812B status LED. */
 
-#define NETWORK_RADIO_VERSION "4.0.0"
+#define NETWORK_RADIO_VERSION "4.4.0"
 #define NETWORK_RADIO_MAX_STATIONS 140
 #ifdef NETWORK_RADIO_NO_ENTRYPOINT
 #define NETWORK_RADIO_V8_NO_ENTRYPOINT
@@ -41,7 +41,7 @@
 
 namespace config {
 #ifndef NETWORK_RADIO_VERSION
-#define NETWORK_RADIO_VERSION "0.4.0-playlist"
+#define NETWORK_RADIO_VERSION "4.4.0"
 #endif
 constexpr char kFirmwareVersion[] = NETWORK_RADIO_VERSION;
 constexpr uint32_t kSerialBaud = 115200;
@@ -50,8 +50,13 @@ constexpr gpio_num_t kI2sLrclk = GPIO_NUM_5;
 constexpr gpio_num_t kI2sDataOut = GPIO_NUM_6;
 
 constexpr char kWifiNamespace[] = "radio";
+// Legacy single-network keys are retained for one-time migration.
 constexpr char kWifiSsidKey[] = "wifi_ssid";
 constexpr char kWifiPasswordKey[] = "wifi_pass";
+constexpr char kWifiCountKey[] = "wifi_count";
+constexpr uint8_t kMaxSavedWifiNetworks = 5;
+constexpr size_t kWifiSsidSize = 33;
+constexpr size_t kWifiPasswordSize = 65;
 constexpr char kPlaylistNamespace[] = "playlist";
 constexpr char kPlaylistCountKey[] = "count";
 constexpr char kPlaylistSelectedKey[] = "selected";
@@ -71,6 +76,7 @@ constexpr char kAccessPointPassword[] = "radio-setup";
 constexpr uint8_t kAccessPointChannel = 6;
 constexpr bool kKeepSetupAccessPointAvailable = true;
 constexpr uint32_t kStationConnectTimeoutMs = 15000;
+constexpr uint32_t kWifiConnectAttemptTimeoutMs = 8000;
 constexpr uint32_t kStationRecoveryTimeoutMs = 20000;
 constexpr char kMdnsName[] = "network-radio";
 }  // namespace config
@@ -81,6 +87,11 @@ struct Station {
   char name[config::kStationNameSize] = {};
   char url[config::kStationUrlSize] = {};
   char logo[config::kStationLogoSize] = {};
+};
+
+struct WifiNetwork {
+  char ssid[config::kWifiSsidSize] = {};
+  char password[config::kWifiPasswordSize] = {};
 };
 
 WebServer server(80);
@@ -100,7 +111,15 @@ char accessPointSsid[20] = {};
 bool accessPointRunning = false;
 bool stationConfigured = false;
 bool wifiCredentialsPresent = false;
+WifiNetwork savedWifiNetworks[config::kMaxSavedWifiNetworks] = {};
+uint8_t savedWifiNetworkCount = 0;
 bool wifiScanInProgress = false;
+enum class WifiRecoveryState : uint8_t { Idle, Scanning, Connecting };
+WifiRecoveryState wifiRecoveryState = WifiRecoveryState::Idle;
+int wifiRecoveryCandidates[config::kMaxSavedWifiNetworks] = {};
+uint8_t wifiRecoveryCandidateCount = 0;
+uint8_t wifiRecoveryCandidateIndex = 0;
+uint32_t wifiRecoveryAttemptStartedAt = 0;
 bool mdnsRunning = false;
 void (*onStationSelected)(uint8_t) = nullptr;
 
@@ -593,40 +612,169 @@ void startMdns() {
   }
 }
 
-bool connectSavedStation() {
-  if (!preferences.begin(config::kWifiNamespace, true)) {
-    Serial.println("ERROR: Could not read saved Wi-Fi credentials.");
-    return false;
+String wifiSsidKey(uint8_t index) {
+  return "wifi_ssid_" + String(index);
+}
+
+String wifiPasswordKey(uint8_t index) {
+  return "wifi_pass_" + String(index);
+}
+
+bool persistSavedWifiNetworks() {
+  if (!preferences.begin(config::kWifiNamespace, false)) return false;
+  bool saved = preferences.putUChar(config::kWifiCountKey, savedWifiNetworkCount) ==
+               sizeof(savedWifiNetworkCount);
+  for (uint8_t index = 0; index < savedWifiNetworkCount; ++index) {
+    saved = preferences.putString(wifiSsidKey(index).c_str(),
+                                  savedWifiNetworks[index].ssid) ==
+                strlen(savedWifiNetworks[index].ssid) &&
+            saved;
+    saved = preferences.putString(wifiPasswordKey(index).c_str(),
+                                  savedWifiNetworks[index].password) ==
+                strlen(savedWifiNetworks[index].password) &&
+            saved;
   }
-  const String ssid = preferences.getString(config::kWifiSsidKey, "");
-  const String password = preferences.getString(config::kWifiPasswordKey, "");
+  for (uint8_t index = savedWifiNetworkCount;
+       index < config::kMaxSavedWifiNetworks; ++index) {
+    preferences.remove(wifiSsidKey(index).c_str());
+    preferences.remove(wifiPasswordKey(index).c_str());
+  }
+  // Remove the legacy values only after the new list has been written.
+  if (saved) {
+    preferences.remove(config::kWifiSsidKey);
+    preferences.remove(config::kWifiPasswordKey);
+  }
   preferences.end();
-  wifiCredentialsPresent = !ssid.isEmpty();
-  // A saved network and a live association are distinct states.  Retain the
-  // former after a failed boot-time association so AP+STA recovery can retry
-  // without discarding the STA interface.
-  stationConfigured = wifiCredentialsPresent;
-  if (ssid.isEmpty()) {
-    return false;
+  return saved;
+}
+
+bool loadSavedWifiNetworks() {
+  savedWifiNetworkCount = 0;
+  memset(savedWifiNetworks, 0, sizeof(savedWifiNetworks));
+  if (!preferences.begin(config::kWifiNamespace, true)) return false;
+
+  const uint8_t storedCount = min<uint8_t>(
+      preferences.getUChar(config::kWifiCountKey, 0),
+      config::kMaxSavedWifiNetworks);
+  for (uint8_t index = 0; index < storedCount; ++index) {
+    const String ssid = preferences.getString(wifiSsidKey(index).c_str(), "");
+    const String password = preferences.getString(wifiPasswordKey(index).c_str(), "");
+    if (ssid.isEmpty() || ssid.length() >= config::kWifiSsidSize ||
+        password.length() >= config::kWifiPasswordSize) {
+      continue;
+    }
+    strlcpy(savedWifiNetworks[savedWifiNetworkCount].ssid, ssid.c_str(),
+            config::kWifiSsidSize);
+    strlcpy(savedWifiNetworks[savedWifiNetworkCount].password, password.c_str(),
+            config::kWifiPasswordSize);
+    ++savedWifiNetworkCount;
   }
-  WiFi.mode(accessPointRunning ? WIFI_AP_STA : WIFI_STA);
-  WiFi.setAutoReconnect(true);
-  WiFi.begin(ssid.c_str(), password.c_str());
+
+  const String legacySsid = preferences.getString(config::kWifiSsidKey, "");
+  const String legacyPassword = preferences.getString(config::kWifiPasswordKey, "");
+  preferences.end();
+
+  // Versions before 4.1.0 stored a single network. Preserve it automatically.
+  if (savedWifiNetworkCount == 0 && !legacySsid.isEmpty() &&
+      legacySsid.length() < config::kWifiSsidSize &&
+      legacyPassword.length() < config::kWifiPasswordSize) {
+    strlcpy(savedWifiNetworks[0].ssid, legacySsid.c_str(), config::kWifiSsidSize);
+    strlcpy(savedWifiNetworks[0].password, legacyPassword.c_str(),
+            config::kWifiPasswordSize);
+    savedWifiNetworkCount = 1;
+    if (!persistSavedWifiNetworks()) {
+      Serial.println("WARN: Could not migrate legacy Wi-Fi configuration.");
+    }
+  }
+  return true;
+}
+
+String savedWifiNetworksJson() {
+  loadSavedWifiNetworks();
+  String json = "{\"saved\":[";
+  for (uint8_t index = 0; index < savedWifiNetworkCount; ++index) {
+    if (index) json += ',';
+    json += "{\"ssid\":\"" + jsonEscape(savedWifiNetworks[index].ssid) + "\"}";
+  }
+  json += "],\"connected_ssid\":\"" +
+          jsonEscape(WiFi.status() == WL_CONNECTED ? WiFi.SSID() : "") + "\"}";
+  return json;
+}
+
+bool connectWifiNetwork(uint8_t index) {
+  Serial.printf("Wi-Fi: trying saved network %s\n", savedWifiNetworks[index].ssid);
+  WiFi.begin(savedWifiNetworks[index].ssid, savedWifiNetworks[index].password);
   const uint32_t startedAt = millis();
   while (WiFi.status() != WL_CONNECTED &&
-         millis() - startedAt < config::kStationConnectTimeoutMs) {
+         millis() - startedAt < config::kWifiConnectAttemptTimeoutMs) {
     delay(250);
   }
   if (WiFi.status() != WL_CONNECTED) {
     WiFi.disconnect(false, false);
     return false;
   }
-  stationConfigured = true;
+  Serial.printf("Wi-Fi: connected to %s\n", savedWifiNetworks[index].ssid);
+  WiFi.setAutoReconnect(true);
   startMdns();
   return true;
 }
 
+bool connectSavedStation() {
+  if (!loadSavedWifiNetworks()) {
+    Serial.println("ERROR: Could not read saved Wi-Fi credentials.");
+    return false;
+  }
+  wifiCredentialsPresent = savedWifiNetworkCount > 0;
+  stationConfigured = wifiCredentialsPresent;
+  if (!wifiCredentialsPresent) return false;
+
+  WiFi.mode(accessPointRunning ? WIFI_AP_STA : WIFI_STA);
+  WiFi.setAutoReconnect(false);
+  WiFi.disconnect(false, false);
+  delay(100);
+
+  int candidates[config::kMaxSavedWifiNetworks];
+  uint8_t candidateCount = 0;
+  bool selected[config::kMaxSavedWifiNetworks] = {};
+  const int scanCount = WiFi.scanNetworks(false, true);
+  if (scanCount >= 0) {
+    // Prefer the strongest visible saved network, while still falling back to
+    // the other visible choices if its router rejects the connection.
+    for (uint8_t rank = 0; rank < savedWifiNetworkCount; ++rank) {
+      int best = -1;
+      int32_t bestRssi = -127;
+      for (uint8_t saved = 0; saved < savedWifiNetworkCount; ++saved) {
+        if (selected[saved]) continue;
+        for (int found = 0; found < scanCount; ++found) {
+          if (WiFi.SSID(found) == savedWifiNetworks[saved].ssid &&
+              WiFi.RSSI(found) > bestRssi) {
+            best = saved;
+            bestRssi = WiFi.RSSI(found);
+          }
+        }
+      }
+      if (best < 0) break;
+      selected[best] = true;
+      candidates[candidateCount++] = best;
+    }
+  }
+  WiFi.scanDelete();
+
+  // Also try SSIDs hidden from scanning, in saved order.
+  for (uint8_t index = 0; index < savedWifiNetworkCount; ++index) {
+    if (!selected[index]) candidates[candidateCount++] = index;
+  }
+  for (uint8_t candidate = 0; candidate < candidateCount; ++candidate) {
+    if (connectWifiNetwork(candidates[candidate])) return true;
+  }
+  return false;
+}
+
 void handleWifiScan() {
+  if (wifiRecoveryState != WifiRecoveryState::Idle) {
+    sendJson("{\"error\":\"正在自动选择已保存的 Wi-Fi，请稍后再扫描\"}", 409);
+    return;
+  }
   if (!wifiScanInProgress) {
     // Scanning requires the station interface.  A device without saved
     // credentials normally runs in AP-only mode, so preserve the setup AP
@@ -681,20 +829,65 @@ void handleSaveWifi() {
     sendJson("{\"error\":\"invalid SSID or password\"}", 400);
     return;
   }
-  if (!preferences.begin(config::kWifiNamespace, false)) {
-    sendJson("{\"error\":\"could not open Wi-Fi settings\"}", 500);
+  if (!loadSavedWifiNetworks()) {
+    sendJson("{\"error\":\"could not read Wi-Fi settings\"}", 500);
     return;
   }
-  const bool wroteSsid = preferences.putString(config::kWifiSsidKey, ssid) == ssid.length();
-  preferences.putString(config::kWifiPasswordKey, password);
-  const bool wrotePassword = preferences.getString(config::kWifiPasswordKey, "\x01") == password;
-  const bool saved = wroteSsid && wrotePassword;
-  preferences.end();
-  if (!saved) {
+  int existing = -1;
+  for (uint8_t index = 0; index < savedWifiNetworkCount; ++index) {
+    if (ssid == savedWifiNetworks[index].ssid) {
+      existing = index;
+      break;
+    }
+  }
+  if (existing < 0 && savedWifiNetworkCount >= config::kMaxSavedWifiNetworks) {
+    sendJson("{\"error\":\"最多保存 5 个 Wi-Fi；请先删除一个网络\"}", 409);
+    return;
+  }
+  const uint8_t target = existing >= 0 ? static_cast<uint8_t>(existing)
+                                       : savedWifiNetworkCount++;
+  strlcpy(savedWifiNetworks[target].ssid, ssid.c_str(), config::kWifiSsidSize);
+  strlcpy(savedWifiNetworks[target].password, password.c_str(),
+          config::kWifiPasswordSize);
+  if (!persistSavedWifiNetworks()) {
     sendJson("{\"error\":\"could not save Wi-Fi settings\"}", 500);
     return;
   }
-  sendJson("{\"saved\":true,\"restarting\":true}");
+  sendJson("{\"saved\":true,\"restarting\":true,\"networks\":" +
+           savedWifiNetworksJson() + "}");
+  delay(300);
+  ESP.restart();
+}
+
+void handleDeleteWifi() {
+  if (!requireAdmin()) return;
+  const String ssid = server.arg("ssid");
+  if (ssid.isEmpty() || !loadSavedWifiNetworks()) {
+    sendJson("{\"error\":\"Wi-Fi network not found\"}", 404);
+    return;
+  }
+  int found = -1;
+  for (uint8_t index = 0; index < savedWifiNetworkCount; ++index) {
+    if (ssid == savedWifiNetworks[index].ssid) {
+      found = index;
+      break;
+    }
+  }
+  if (found < 0) {
+    sendJson("{\"error\":\"Wi-Fi network not found\"}", 404);
+    return;
+  }
+  for (uint8_t index = static_cast<uint8_t>(found);
+       index + 1 < savedWifiNetworkCount; ++index) {
+    savedWifiNetworks[index] = savedWifiNetworks[index + 1];
+  }
+  --savedWifiNetworkCount;
+  memset(&savedWifiNetworks[savedWifiNetworkCount], 0, sizeof(WifiNetwork));
+  if (!persistSavedWifiNetworks()) {
+    sendJson("{\"error\":\"could not save Wi-Fi settings\"}", 500);
+    return;
+  }
+  sendJson("{\"deleted\":true,\"restarting\":true}");
   delay(300);
   ESP.restart();
 }
@@ -1199,6 +1392,9 @@ constexpr uint32_t kPlaybackRetryInitialMs = 8000;
 constexpr uint32_t kPlaybackRetryMaxMs = 60000;
 constexpr uint32_t kPlaybackStartupTimeoutMs = 30000;
 constexpr uint32_t kPlaybackPostReadyRetryMs = 1000;
+constexpr char kBootChimePath[] = "/boot-chime.wav";
+constexpr uint32_t kBootChimeMaxMs = 5000;
+constexpr uint8_t kBootChimeMaxVolume = 7;
 constexpr uint8_t kStatusLedPin = 48;
 constexpr uint8_t kStatusLedBrightness = 36;
 constexpr uint32_t kStatusLedRefreshMs = 20;
@@ -1527,6 +1723,35 @@ void audioInfoV8(Audio::msg_t message) {
   }
 }
 
+void playBootChime() {
+  if (!LittleFS.exists(kBootChimePath)) {
+    addLog("boot", "boot chime asset missing");
+    return;
+  }
+  // The chime is deliberately quieter than the user's normal radio volume.
+  const uint8_t chimeVolume = min<uint8_t>(playerVolume, kBootChimeMaxVolume);
+  playbackEnabled = false;
+  audio.setVolume(chimeVolume);
+  if (!audio.connecttoFS(LittleFS, kBootChimePath)) {
+    addLog("boot", "boot chime could not start");
+    audio.setVolume(playerVolume);
+    playbackEnabled = true;
+    return;
+  }
+  addLog("boot", "playing startup chime");
+  const uint32_t deadline = millis() + kBootChimeMaxMs;
+  while (audio.isRunning() && !timeReached(millis(), deadline)) {
+    audio.loop();
+    delay(1);
+  }
+  audio.stopSong();
+  audio.setVolume(playerVolume);
+  playbackEnabled = true;
+  playerRequested = false;
+  playbackAwaitingReady = false;
+  playbackFaultPending = false;
+}
+
 void loadSecurity() {
   playerPreferences.begin(kSecurityNamespace, true);
   const String stored = playerPreferences.getString(kAdminPasswordKey, "");
@@ -1660,8 +1885,118 @@ void onPlaylistSelectionV8(uint8_t) {
   setPlayerMessage("switching station");
 }
 
+void finishWifiRecovery() {
+  wifiRecoveryState = WifiRecoveryState::Idle;
+  wifiRecoveryCandidateCount = 0;
+  wifiRecoveryCandidateIndex = 0;
+  wifiRecoveryAttemptStartedAt = 0;
+  lastWifiRetryAt = millis();
+}
+
+void startNextWifiRecoveryCandidate() {
+  if (wifiRecoveryCandidateIndex >= wifiRecoveryCandidateCount) {
+    addLog("wifi", "no saved network connected");
+    finishWifiRecovery();
+    return;
+  }
+  const int candidate = wifiRecoveryCandidates[wifiRecoveryCandidateIndex];
+  Serial.printf("Wi-Fi recovery: trying %s\n", savedWifiNetworks[candidate].ssid);
+  WiFi.disconnect(false, false);
+  WiFi.begin(savedWifiNetworks[candidate].ssid, savedWifiNetworks[candidate].password);
+  wifiRecoveryAttemptStartedAt = millis();
+  wifiRecoveryState = WifiRecoveryState::Connecting;
+}
+
+void buildWifiRecoveryCandidates(int scanCount) {
+  wifiRecoveryCandidateCount = 0;
+  wifiRecoveryCandidateIndex = 0;
+  bool selected[config::kMaxSavedWifiNetworks] = {};
+  // Match visible SSIDs first, strongest signal first.
+  for (uint8_t rank = 0; rank < savedWifiNetworkCount; ++rank) {
+    int best = -1;
+    int32_t bestRssi = -127;
+    for (uint8_t saved = 0; saved < savedWifiNetworkCount; ++saved) {
+      if (selected[saved]) continue;
+      for (int found = 0; found < scanCount; ++found) {
+        if (WiFi.SSID(found) == savedWifiNetworks[saved].ssid &&
+            WiFi.RSSI(found) > bestRssi) {
+          best = saved;
+          bestRssi = WiFi.RSSI(found);
+        }
+      }
+    }
+    if (best < 0) break;
+    selected[best] = true;
+    wifiRecoveryCandidates[wifiRecoveryCandidateCount++] = best;
+  }
+  // A hidden SSID does not appear in scans, but remains a valid fallback.
+  for (uint8_t saved = 0; saved < savedWifiNetworkCount; ++saved) {
+    if (!selected[saved]) {
+      wifiRecoveryCandidates[wifiRecoveryCandidateCount++] = saved;
+    }
+  }
+}
+
+void beginWifiRecovery() {
+  if (wifiScanInProgress || wifiRecoveryState != WifiRecoveryState::Idle) return;
+  if (!loadSavedWifiNetworks() || savedWifiNetworkCount == 0) {
+    finishWifiRecovery();
+    return;
+  }
+  stationConfigured = true;
+  WiFi.mode(accessPointRunning ? WIFI_AP_STA : WIFI_STA);
+  WiFi.setAutoReconnect(false);
+  WiFi.scanDelete();
+  const int result = WiFi.scanNetworks(true, true);
+  if (result == WIFI_SCAN_FAILED) {
+    addLog("wifi", "recovery scan could not start");
+    finishWifiRecovery();
+    return;
+  }
+  wifiRecoveryState = WifiRecoveryState::Scanning;
+  lastWifiRetryAt = millis();
+  addLog("wifi", "recovery scan started");
+}
+
+void maintainWifiRecovery() {
+  if (WiFi.status() == WL_CONNECTED) {
+    if (wifiRecoveryState != WifiRecoveryState::Idle) {
+      addLog("wifi", "saved network connected");
+      WiFi.setAutoReconnect(true);
+      finishWifiRecovery();
+    }
+    return;
+  }
+  if (wifiScanInProgress) return;
+
+  if (wifiRecoveryState == WifiRecoveryState::Idle) {
+    if (millis() - lastWifiRetryAt >= kWifiRetryMs) beginWifiRecovery();
+    return;
+  }
+  if (wifiRecoveryState == WifiRecoveryState::Scanning) {
+    const int scanCount = WiFi.scanComplete();
+    if (scanCount == WIFI_SCAN_RUNNING) return;
+    if (scanCount < 0) {
+      addLog("wifi", "recovery scan failed");
+      WiFi.scanDelete();
+      finishWifiRecovery();
+      return;
+    }
+    buildWifiRecoveryCandidates(scanCount);
+    WiFi.scanDelete();
+    startNextWifiRecoveryCandidate();
+    return;
+  }
+  if (millis() - wifiRecoveryAttemptStartedAt >=
+      config::kWifiConnectAttemptTimeoutMs) {
+    ++wifiRecoveryCandidateIndex;
+    startNextWifiRecoveryCandidate();
+  }
+}
+
 void maintainNetworkAndPlayback() {
   const bool connected = WiFi.status() == WL_CONNECTED;
+  if (connected) maintainWifiRecovery();
   if (!connected) {
     if (wasStationConnected) {
       audio.stopSong();
@@ -1671,14 +2006,7 @@ void maintainNetworkAndPlayback() {
       setPlayerMessage("router Wi-Fi disconnected; retrying");
       addLog("wifi", "router Wi-Fi disconnected");
     }
-    // WiFi.reconnect() cancels an active radio scan on ESP32.  Let the scan
-    // finish before scheduling the next association attempt.
-    if (WiFi.scanComplete() != WIFI_SCAN_RUNNING &&
-        millis() - lastWifiRetryAt >= kWifiRetryMs) {
-      lastWifiRetryAt = millis();
-      WiFi.reconnect();
-      addLog("wifi", "reconnect requested");
-    }
+    maintainWifiRecovery();
     startAccessPoint();
     wasStationConnected = false;
     return;
@@ -2191,6 +2519,54 @@ void handleOtaUpload() {
   if (upload.status != UPLOAD_FILE_WRITE) updateStatusLed(true);
 }
 
+// LittleFS uses the partition-table subtype named "spiffs" in Arduino ESP32,
+// so U_SPIFFS deliberately targets the LittleFS partition at 0x620000.
+// This replaces only web assets and persistent LittleFS files; NVS settings
+// (Wi-Fi, stations, password, and theme) are left intact.
+void handleResourceOtaUpload() {
+  if (!isAdminRequest()) return;
+  HTTPUpload &upload = server.upload();
+  if (upload.status == UPLOAD_FILE_START) {
+    otaSucceeded = false;
+    otaInProgress = true;
+    playbackWasEnabledBeforeOta = playbackEnabled;
+    statusLedError = false;
+    otaError = "";
+    playbackEnabled = false;
+    stationChangePending = false;
+    playbackAwaitingReady = false;
+    playbackFaultPending = false;
+    audio.stopSong();
+    playerRequested = false;
+    addLog("ota", "LittleFS resource upload started");
+    updateStatusLed(true);
+    if (!Update.begin(UPDATE_SIZE_UNKNOWN, U_SPIFFS)) {
+      const String error = Update.errorString();
+      failOtaUpload(error.c_str());
+    }
+  } else if (upload.status == UPLOAD_FILE_WRITE && otaInProgress && otaError.isEmpty()) {
+    updateStatusLed();
+    if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
+      const String error = Update.errorString();
+      failOtaUpload(error.c_str());
+    }
+  } else if (upload.status == UPLOAD_FILE_END && otaInProgress && otaError.isEmpty()) {
+    otaSucceeded = Update.end(true);
+    otaInProgress = false;
+    if (!otaSucceeded) {
+      otaError = Update.errorString();
+      statusLedError = true;
+      resumePlaybackAfterFailedOta();
+    } else {
+      playbackWasEnabledBeforeOta = false;
+    }
+    addLog("ota", otaSucceeded ? "LittleFS resources verified" : otaError.c_str());
+  } else if (upload.status == UPLOAD_FILE_ABORTED) {
+    failOtaUpload("LittleFS resource upload aborted");
+  }
+  if (upload.status != UPLOAD_FILE_WRITE) updateStatusLed(true);
+}
+
 void handleOtaResult() {
   if (!requireAdmin()) return;
   if (!otaSucceeded) {
@@ -2226,8 +2602,8 @@ document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh()}
 )HTML";
 
 constexpr char kAdminHtmlV302[] PROGMEM =
-R"HTML(<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>网络收音机 4.0.0 管理</title><style>
-:root{color-scheme:dark}body{max-width:880px;margin:24px auto;padding:0 16px;background:#101827;color:#e5e7eb;font:16px system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif}section,pre,.station{background:#172234;padding:14px;border-radius:10px;margin:14px 0}button,input,select{box-sizing:border-box;padding:9px;margin:4px;border:0;border-radius:6px}input,select{width:100%}button{background:#38bdf8;color:#062032;font-weight:700;cursor:pointer}.warn{background:#fbbf24}.danger{background:#fb7185}.station img,.station .fallback{display:inline-grid;width:48px;height:48px;object-fit:contain;object-position:center;background:#fff;border-radius:8px;vertical-align:middle;margin-right:10px}.station .fallback{place-items:center;background:#e89c27;color:#fff;font-weight:700}.station small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#b7c6da}.actions{display:block}.station button{min-width:82px;padding:11px 17px}.active{outline:2px solid #38bdf8}.state{font-size:1.1em;color:#67e8f9;margin-bottom:24px}.transport{display:flex;align-items:center;justify-content:center;gap:clamp(28px,8vw,72px);margin:18px 0 28px}.transport button{display:grid;place-items:center;margin:0}.skip{width:76px;height:64px;border-radius:18px;font-size:25px;background:#263449;color:#dce6f5}.play{width:92px;height:92px;border-radius:50%;font-size:36px;background:#f8fafc;color:#172234;box-shadow:0 10px 28px #0005}.volume-head{display:flex;justify-content:space-between;align-items:center;margin:0 6px 8px;color:#cbd5e1}.volume-head b{color:#fff;font-size:1.15em}.volume{width:calc(100% - 10px);accent-color:#38bdf8}.theme-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.theme-grid label{display:grid;gap:6px}.theme-grid input,.theme-grid select{margin:0}.theme-grid input[type=color]{height:54px;padding:4px;border:1px solid #ffffff26;border-radius:10px;background:#fff;color-scheme:light;cursor:pointer}.theme-grid input[type=color]::-webkit-color-swatch-wrapper{padding:0}.theme-grid input[type=color]::-webkit-color-swatch{border:0;border-radius:6px}.theme-grid input[type=color]::-moz-color-swatch{border:0;border-radius:6px}pre{overflow:auto;white-space:pre-wrap}a{color:#67e8f9}@media(max-width:560px){.theme-grid{grid-template-columns:1fr}.station{overflow-x:auto;white-space:nowrap}.station small{white-space:normal}.station button{min-width:auto;padding:9px 11px;margin:3px 2px}}</style></head>
+R"HTML(<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>网络收音机 4.4.0 管理</title><style>
+:root{color-scheme:dark}body{max-width:880px;margin:24px auto;padding:0 16px;background:#101827;color:#e5e7eb;font:16px system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif}section,pre,.station,.wifi-network{background:#172234;padding:14px;border-radius:10px;margin:14px 0}button,input,select{box-sizing:border-box;padding:9px;margin:4px;border:0;border-radius:6px}input,select{width:100%}button{background:#38bdf8;color:#062032;font-weight:700;cursor:pointer}.warn{background:#fbbf24}.danger{background:#fb7185}.station img,.station .fallback{display:inline-grid;width:48px;height:48px;object-fit:contain;object-position:center;background:#fff;border-radius:8px;vertical-align:middle;margin-right:10px}.station .fallback{place-items:center;background:#e89c27;color:#fff;font-weight:700}.station small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#b7c6da}.actions{display:block}.station button{min-width:82px;padding:11px 17px}.wifi-network{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px}.wifi-network b{overflow:hidden;text-overflow:ellipsis}.wifi-network button{width:auto;margin:0}.active{outline:2px solid #38bdf8}.state{font-size:1.1em;color:#67e8f9;margin-bottom:24px}.transport{display:flex;align-items:center;justify-content:center;gap:clamp(28px,8vw,72px);margin:18px 0 28px}.transport button{display:grid;place-items:center;margin:0}.skip{width:76px;height:64px;border-radius:18px;font-size:25px;background:#263449;color:#dce6f5}.play{width:92px;height:92px;border-radius:50%;font-size:36px;background:#f8fafc;color:#172234;box-shadow:0 10px 28px #0005}.volume-head{display:flex;justify-content:space-between;align-items:center;margin:0 6px 8px;color:#cbd5e1}.volume-head b{color:#fff;font-size:1.15em}.volume{width:calc(100% - 10px);accent-color:#38bdf8}.theme-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.theme-grid label{display:grid;gap:6px}.theme-grid input,.theme-grid select{margin:0}.theme-grid input[type=color]{height:54px;padding:4px;border:1px solid #ffffff26;border-radius:10px;background:#fff;color-scheme:light;cursor:pointer}.theme-grid input[type=color]::-webkit-color-swatch-wrapper{padding:0}.theme-grid input[type=color]::-webkit-color-swatch{border:0;border-radius:6px}.theme-grid input[type=color]::-moz-color-swatch{border:0;border-radius:6px}pre{overflow:auto;white-space:pre-wrap}a{color:#67e8f9}@media(max-width:560px){.theme-grid{grid-template-columns:1fr}.station{overflow-x:auto;white-space:nowrap}.station small{white-space:normal}.station button{min-width:auto;padding:9px 11px;margin:3px 2px}}</style></head>
 <body><h1>ESP32-S3 网络收音机</h1><p>版本号：)HTML"
 NETWORK_RADIO_VERSION
 R"HTML(　编译时间：)HTML"
@@ -2236,8 +2612,8 @@ R"HTML(　<a href="/">返回播放器</a></p>
 <section class="player"><h2>正在播放</h2><div id="now" class="state">读取中…</div><div class="transport"><button id="previous" class="skip" aria-label="上一台">◀◀</button><button id="play" class="play" aria-label="播放或暂停">▶</button><button id="next" class="skip" aria-label="下一台">▶▶</button></div><div class="volume-head"><span>音量</span><b><span id="volumeText">--</span>/21</b></div><input id="volume" class="volume" type="range" min="0" max="21"></section>
 <section><h2>用户页面外观</h2><div class="theme-grid"><label>页面颜色<input id="background" type="color" value="#656b6a"></label><label>强调颜色<input id="accent" type="color" value="#f2a51a"></label><label>纹理效果<select id="texture"><option value="none">无纹理</option><option value="dots">圆点</option><option value="grid">网格</option><option value="diagonal">斜纹</option><option value="cloud">祥云</option><option value="lattice">回纹窗格</option><option value="waves">水波</option><option value="bamboo">竹影</option><option value="ricepaper">宣纸</option><option value="porcelain">青花</option></select></label></div><button id="saveTheme">保存页面外观</button></section>
 <section><h2>播放列表</h2><div id="stations">加载中…</div><h3 id="formTitle">新增电台</h3><input id="editId" type="hidden"><input id="stationName" placeholder="电台名称"><input id="stationUrl" placeholder="http(s):// 音频流地址"><button id="saveStation">保存</button><button id="cancelEdit" class="warn">取消编辑</button></section>
-<section><h2>Wi-Fi</h2><button id="scanWifi">扫描网络</button><select id="ssid"><option value="">选择 Wi-Fi</option></select><input id="wifiPassword" type="password" placeholder="Wi-Fi 密码"><button id="saveWifi">保存并连接</button><button id="forgetWifi" class="warn">清除 Wi-Fi 设置</button></section>
-<section><h2>维护与安全</h2><button id="chooseFirmware">选择固件并升级</button><input id="firmware" type="file" accept=".bin" hidden><button id="downloadLog">下载诊断日志</button><input id="adminPassword" type="password" placeholder="设置管理密码（8–63 位，用户名 admin）"><button id="savePassword">保存管理密码</button><button id="factoryReset" class="danger">恢复出厂设置</button><p>配网热点密码独立：<code>radio-setup</code></p></section><pre id="status">读取中…</pre>
+<section><h2>Wi-Fi</h2><p>最多保存 5 个网络；启动时会选择信号最强且可连接的已保存网络。</p><div id="savedWifi">读取已保存网络…</div><button id="scanWifi">扫描网络</button><select id="ssid"><option value="">选择 Wi-Fi</option></select><input id="wifiPassword" type="password" placeholder="Wi-Fi 密码（更新同名网络时请重新填写）"><button id="saveWifi">保存网络并重启连接</button><button id="forgetWifi" class="warn">清除全部 Wi-Fi 设置</button></section>
+<section><h2>维护与安全</h2><button id="chooseFirmware">选择固件并升级</button><input id="firmware" type="file" accept=".bin" hidden><button id="chooseResources" class="warn">选择资源镜像并升级</button><input id="resources" type="file" accept=".bin" hidden><p><small>资源升级请选择构建目录中的 <code>littlefs.bin</code>。它会更新台标、开机提示音等 LittleFS 文件，不会清除 Wi-Fi、电台或管理密码。</small></p><button id="downloadLog">下载诊断日志</button><input id="adminPassword" type="password" placeholder="设置管理密码（8–63 位，用户名 admin）"><button id="savePassword">保存管理密码</button><button id="factoryReset" class="danger">恢复出厂设置</button><p>配网热点密码独立：<code>radio-setup</code></p></section><pre id="status">读取中…</pre>
 <script>
 const q=s=>document.querySelector(s),enc=o=>new URLSearchParams(o);let stations=[],selected=-1,playerState='stopped',playlistRevision=0,pollBusy=false,volumeTimer,pollCount=0;
 async function api(url,options){const r=await fetch(url,options);const t=await r.text();let d={};try{d=t?JSON.parse(t):{}}catch(_){d={error:t||'请求失败'}}if(!r.ok)throw Error(d.error||'请求失败');return d}
@@ -2257,11 +2633,15 @@ function clearForm(){q('#editId').value='';q('#stationName').value='';q('#statio
 async function saveStation(){const id=q('#editId').value,body=enc({name:q('#stationName').value,url:q('#stationUrl').value});try{const data=await api(id===''?'/api/stations':'/api/stations/update?id='+encodeURIComponent(id),{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body});applyPlaylist(data);clearForm()}catch(e){alert(e.message)}}
 function removeStation(id){if(confirm('删除该电台？'))post('/api/stations/delete?id='+id)}
 async function scanWifi(){try{let data;for(let attempt=0;attempt<25;attempt++){data=await api('/api/wifi/scan');if(!data.scanning)break;await new Promise(resolve=>setTimeout(resolve,350))}if(!data||data.scanning)throw Error('Wi-Fi 扫描超时');const select=q('#ssid');select.replaceChildren();const empty=document.createElement('option');empty.value='';empty.textContent='选择 Wi-Fi';select.append(empty);(data.networks||[]).forEach(network=>{const option=document.createElement('option');option.value=network.ssid;option.textContent=network.ssid+' ('+network.rssi+' dBm)';select.append(option)})}catch(e){alert(e.message)}}
-async function saveWifi(){try{await api('/api/wifi',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:enc({ssid:q('#ssid').value,password:q('#wifiPassword').value})});q('#status').textContent='Wi-Fi 已保存，设备正在重启…'}catch(e){alert(e.message)}}
+function renderSavedWifi(data){const host=q('#savedWifi');host.replaceChildren();const networks=data.saved||[];networks.forEach(network=>{const row=document.createElement('div'),name=document.createElement('b'),note=document.createElement('small'),remove=document.createElement('button');row.className='wifi-network';name.textContent=network.ssid;note.textContent=network.ssid===data.connected_ssid?'当前已连接':'启动时自动选择';remove.textContent='删除';remove.className='warn';remove.addEventListener('click',()=>deleteWifi(network.ssid));const text=document.createElement('div');text.append(name,document.createElement('br'),note);row.append(text,remove);host.append(row)});if(!networks.length){const p=document.createElement('p');p.textContent='尚未保存 Wi-Fi 网络。';host.append(p)}}
+async function loadSavedWifi(){try{renderSavedWifi(await api('/api/wifi'))}catch(e){q('#savedWifi').textContent='无法读取已保存网络：'+e.message}}
+async function saveWifi(){try{await api('/api/wifi',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:enc({ssid:q('#ssid').value,password:q('#wifiPassword').value})});q('#status').textContent='Wi-Fi 已保存，设备正在重启并选择可用网络…'}catch(e){alert(e.message)}}
+async function deleteWifi(ssid){if(!confirm('删除已保存的 Wi-Fi “'+ssid+'”？'))return;try{await api('/api/wifi/delete?ssid='+encodeURIComponent(ssid),{method:'POST'});q('#status').textContent='Wi-Fi 已删除，设备正在重启…'}catch(e){alert(e.message)}}
 async function saveTheme(){try{const data=await api('/api/ui-theme',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:enc({background:q('#background').value,accent:q('#accent').value,texture:q('#texture').value})});q('#background').value=data.background;q('#accent').value=data.accent;q('#texture').value=data.texture;alert('页面外观已保存')}catch(e){alert(e.message)}}
 async function savePassword(){try{await api('/api/security/password',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:enc({password:q('#adminPassword').value})});alert('管理密码已保存；请刷新页面并用 admin 登录。')}catch(e){alert(e.message)}}
 async function uploadFirmware(file){if(!file||!confirm('上传后设备会重启，继续？'))return;const form=new FormData;form.append('firmware',file);try{await api('/api/ota',{method:'POST',body:form});q('#status').textContent='升级完成，设备正在重启…'}catch(e){alert(e.message)}}
-q('#previous').addEventListener('click',()=>post('/api/player/previous'));q('#play').addEventListener('click',()=>post(playerState==='playing'?'/api/player/stop':'/api/player/play'));q('#next').addEventListener('click',()=>post('/api/player/next'));q('#volume').addEventListener('input',e=>{q('#volumeText').textContent=e.target.value;clearTimeout(volumeTimer);volumeTimer=setTimeout(()=>post('/api/player/volume?value='+encodeURIComponent(e.target.value)),180)});q('#saveStation').addEventListener('click',saveStation);q('#cancelEdit').addEventListener('click',clearForm);q('#scanWifi').addEventListener('click',scanWifi);q('#saveWifi').addEventListener('click',saveWifi);q('#forgetWifi').addEventListener('click',()=>{if(confirm('清除保存的 Wi-Fi？'))post('/api/wifi/forget')});q('#saveTheme').addEventListener('click',saveTheme);q('#savePassword').addEventListener('click',savePassword);q('#chooseFirmware').addEventListener('click',()=>q('#firmware').click());q('#firmware').addEventListener('change',e=>uploadFirmware(e.target.files[0]));q('#downloadLog').addEventListener('click',()=>location='/api/diagnostics/download');q('#factoryReset').addEventListener('click',()=>{if(confirm('这将清除 Wi-Fi、电台、音量、页面外观和管理密码，确定？'))post('/api/factory-reset')});document.addEventListener('visibilitychange',()=>{if(!document.hidden)poll()});Promise.all([loadPlaylist(),refreshPlayer(),refreshStatus(),api('/api/ui-theme').then(t=>{q('#background').value=t.background;q('#accent').value=t.accent;q('#texture').value=t.texture})]).then(poll).catch(e=>q('#status').textContent='错误：'+e.message);
+async function uploadResources(file){if(!file||!confirm('资源将被替换，上传后设备会重启；Wi-Fi 与电台设置会保留。继续？'))return;const form=new FormData;form.append('resources',file);try{await api('/api/ota/resources',{method:'POST',body:form});q('#status').textContent='资源升级完成，设备正在重启…'}catch(e){alert(e.message)}}
+q('#previous').addEventListener('click',()=>post('/api/player/previous'));q('#play').addEventListener('click',()=>post(playerState==='playing'?'/api/player/stop':'/api/player/play'));q('#next').addEventListener('click',()=>post('/api/player/next'));q('#volume').addEventListener('input',e=>{q('#volumeText').textContent=e.target.value;clearTimeout(volumeTimer);volumeTimer=setTimeout(()=>post('/api/player/volume?value='+encodeURIComponent(e.target.value)),180)});q('#saveStation').addEventListener('click',saveStation);q('#cancelEdit').addEventListener('click',clearForm);q('#scanWifi').addEventListener('click',scanWifi);q('#saveWifi').addEventListener('click',saveWifi);q('#forgetWifi').addEventListener('click',()=>{if(confirm('清除全部已保存的 Wi-Fi？'))post('/api/wifi/forget')});q('#saveTheme').addEventListener('click',saveTheme);q('#savePassword').addEventListener('click',savePassword);q('#chooseFirmware').addEventListener('click',()=>q('#firmware').click());q('#firmware').addEventListener('change',e=>uploadFirmware(e.target.files[0]));q('#chooseResources').addEventListener('click',()=>q('#resources').click());q('#resources').addEventListener('change',e=>uploadResources(e.target.files[0]));q('#downloadLog').addEventListener('click',()=>location='/api/diagnostics/download');q('#factoryReset').addEventListener('click',()=>{if(confirm('这将清除 Wi-Fi、电台、音量、页面外观和管理密码，确定？'))post('/api/factory-reset')});document.addEventListener('visibilitychange',()=>{if(!document.hidden)poll()});Promise.all([loadPlaylist(),refreshPlayer(),refreshStatus(),loadSavedWifi(),api('/api/ui-theme').then(t=>{q('#background').value=t.background;q('#accent').value=t.accent;q('#texture').value=t.texture})]).then(poll).catch(e=>q('#status').textContent='错误：'+e.message);
 </script></body></html>
 )HTML";
 
@@ -2286,7 +2666,9 @@ void configureWebServerV8() {
   server.on("/api/stations/select", HTTP_POST, [] { if (requireAdmin()) handleSelectStation(); });
   server.on("/api/stations/move", HTTP_POST, [] { if (requireAdmin()) handleMoveStationV11(); });
   server.on("/api/wifi/scan", HTTP_GET, [] { if (requireAdmin()) handleWifiScan(); });
+  server.on("/api/wifi", HTTP_GET, [] { if (requireAdmin()) sendJson(savedWifiNetworksJson()); });
   server.on("/api/wifi", HTTP_POST, handleSaveWifi);
+  server.on("/api/wifi/delete", HTTP_POST, handleDeleteWifi);
   server.on("/api/wifi/forget", HTTP_POST, handleForgetWifi);
   server.on("/api/player/status", HTTP_GET, handlePlayerStatusV8);
   server.on("/api/player/play", HTTP_POST, handlePlayerPlayV8);
@@ -2301,6 +2683,7 @@ void configureWebServerV8() {
   server.on("/api/ui-theme", HTTP_POST, handleSaveUiTheme);
   server.on("/api/factory-reset", HTTP_POST, handleFactoryReset);
   server.on("/api/ota", HTTP_POST, handleOtaResult, handleOtaUpload);
+  server.on("/api/ota/resources", HTTP_POST, handleOtaResult, handleResourceOtaUpload);
   server.onNotFound([] { server.sendHeader("Location", "/"); server.send(302, "text/plain", "Redirecting"); });
   server.begin();
 }
@@ -2331,6 +2714,7 @@ void setup() {
   Audio::audio_info_callback = audioInfoV8;
   audio.settings.BUFFER_TRESHOLD_HLS = 32 * 1024;
   audio.setPinout(config::kI2sBclk, config::kI2sLrclk, config::kI2sDataOut); audio.setVolume(playerVolume);
+  playBootChime();
   const bool connected = connectSavedStation();
   if (!connected || config::kKeepSetupAccessPointAvailable) startAccessPoint();
   wasStationConnected = connected;
