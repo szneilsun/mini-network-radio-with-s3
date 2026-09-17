@@ -1,6 +1,6 @@
 # ESP32-S3 网络收音机
 
-当前版本为 **4.4.3**。项目基于 ESP32-S3 N16R8，实现网络电台播放、手机与桌面网页控制、管理后台、Wi-Fi 自动恢复、OTA、诊断日志、LittleFS 台标和板载 RGB 状态灯。
+当前版本为 **4.4.4**。项目基于 ESP32-S3 N16R8，实现网络电台播放、手机与桌面网页控制、管理后台、Wi-Fi 自动恢复、OTA、诊断日志、LittleFS 台标和板载 RGB 状态灯。
 
 ## 目录结构
 
@@ -56,7 +56,7 @@ tools/                        编译、烧录和布局校验工具
 | LittleFS | `0x620000` | `0x9D0000` | 台标及持久化文件 |
 | Core Dump | `0xFF0000` | `0x10000` | 崩溃转储 |
 
-网页 OTA 不支持上传 16 MiB 完整镜像。后台“固件升级”上传应用 `.bin`；4.4.0 及以后还可通过“资源镜像升级”上传构建目录的 `littlefs.bin`。完整无线升级时，先升级应用，重启后再升级资源；资源升级会保留 Wi-Fi、电台、管理密码及其他 NVS 设置。整片擦除后仍必须同时写入启动程序、分区表、OTA 引导、应用和 LittleFS 镜像。
+网页 OTA 不支持上传 16 MiB 完整镜像。后台“固件升级”上传应用 `.bin`；4.4.0 及以后还可通过“资源镜像升级”上传构建目录的 `littlefs.bin`。完整无线升级时，先升级应用，重启后再升级资源。资源升级会保留 Wi-Fi、管理密码及其他 NVS 设置，但会替换 LittleFS 中的播放列表；4.4.4 会自动恢复内置电台，自定义电台应提前备份。整片擦除后仍必须同时写入启动程序、分区表、OTA 引导、应用和 LittleFS 镜像。
 
 ## 首次启动或恢复出厂后的配置
 
@@ -82,6 +82,6 @@ arduino-cli lib install "ESP32-audioI2S"
 ./tools/build-firmware.sh --upload --port /dev/cu.usbserial-XXXX
 ```
 
-输出位于 `build/esp32-network-radio/`，构建脚本会自动校验 16 MiB Flash 布局。正式发布包存放在 `release/`；仓库中现有的上一版发布包为 `network-radio-v3.0.2-source.zip`。
+输出位于 `build/esp32-network-radio/`，构建脚本会自动校验 16 MiB Flash 布局。正式发布包存放在 `release/`；当前 OTA 发布包为 `network-radio-v4.4.4-ota.zip`。
 
 不要提交 Wi-Fi 密码、管理员密码、私有流地址或设备专属密钥。
