@@ -15,6 +15,14 @@
 #define NETWORK_RADIO_V8_NO_ENTRYPOINT
 #endif
 
+// Arduino's automatic prototype generator can misplace the entry-point
+// declarations inside the large embedded HTML strings below. Declare them
+// explicitly so setup() cannot be turned into a recursive call at build time.
+#ifndef NETWORK_RADIO_V8_NO_ENTRYPOINT
+void setup();
+void loop();
+#endif
+
 // BEGIN INLINED: playback module
 /* Network Radio V5: V4 playlist management plus HLS/AAC playback. */
 
@@ -1396,13 +1404,15 @@ constexpr uint32_t kPlaybackStartupTimeoutMs = 30000;
 constexpr uint32_t kPlaybackPostReadyRetryMs = 1000;
 constexpr char kBootChimePath[] = "/boot-chime.wav";
 constexpr uint32_t kBootChimeMaxMs = 5000;
-constexpr uint8_t kBootChimeMaxVolume = 7;
+constexpr uint8_t kBootChimeVolume = 21;
 constexpr uint8_t kStatusLedPin = 48;
 constexpr uint8_t kStatusLedBrightness = 36;
 constexpr uint32_t kStatusLedRefreshMs = 20;
 constexpr size_t kLegacyBuiltinStationCount = 100;
-constexpr char kLegacyBuiltinCatalogKey[] = "builtin_100_v1";
-constexpr char kNewsStationPackKey[] = "news_pack_v1";
+// Bump the import markers after the resource image migration so devices whose
+// LittleFS playlist was replaced rebuild every missing bundled station once.
+constexpr char kLegacyBuiltinCatalogKey[] = "builtin_100_v2";
+constexpr char kNewsStationPackKey[] = "news_pack_v2";
 constexpr char kRegionSortKey[] = "region_sort_v3";
 static_assert(kBuiltinStationCount == 113,
               "Update the incremental station-pack boundary when the catalog changes.");
@@ -1730,10 +1740,8 @@ void playBootChime() {
     addLog("boot", "boot chime asset missing");
     return;
   }
-  // The chime is deliberately quieter than the user's normal radio volume.
-  const uint8_t chimeVolume = min<uint8_t>(playerVolume, kBootChimeMaxVolume);
   playbackEnabled = false;
-  audio.setVolume(chimeVolume);
+  audio.setVolume(kBootChimeVolume);
   if (!audio.connecttoFS(LittleFS, kBootChimePath)) {
     addLog("boot", "boot chime could not start");
     audio.setVolume(playerVolume);
@@ -2731,7 +2739,10 @@ void setup() {
   playerPreferences.begin("player", true); playerVolume = playerPreferences.getUChar("volume", playerVolume); playerPreferences.end();
   Audio::audio_info_callback = audioInfoV8;
   audio.settings.BUFFER_TRESHOLD_HLS = 32 * 1024;
-  addLog("boot", "audio output deferred until playback");
+  // Initialise I2S exactly once and reuse the same Audio instance for the
+  // startup chime and the subsequent network stream.
+  initialiseAudioOutput();
+  playBootChime();
   const bool connected = connectSavedStation();
   if (!connected || config::kKeepSetupAccessPointAvailable) startAccessPoint();
   wasStationConnected = connected;

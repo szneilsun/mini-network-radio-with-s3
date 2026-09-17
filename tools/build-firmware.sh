@@ -68,7 +68,7 @@ if (( ${#compile_args[@]} > 0 )); then
     --build-path "$build_path" \
     --build-property "$merge_recipe" \
     --build-property "$flash_args_recipe" \
-    "${ctags_args[@]}" \
+    ${ctags_args[@]+"${ctags_args[@]}"} \
     "${compile_args[@]}" \
     "$sketch_dir"
 else
@@ -77,7 +77,7 @@ else
     --build-path "$build_path" \
     --build-property "$merge_recipe" \
     --build-property "$flash_args_recipe" \
-    "${ctags_args[@]}" \
+    ${ctags_args[@]+"${ctags_args[@]}"} \
     "$sketch_dir"
 fi
 
