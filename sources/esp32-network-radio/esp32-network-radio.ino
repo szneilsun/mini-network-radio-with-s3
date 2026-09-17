@@ -1,5 +1,5 @@
 /*
- * Network Radio 4.4.0 standalone Arduino sketch.
+ * Network Radio 4.4.1 standalone Arduino sketch.
  * Project-local source dependencies are inlined in this file.
  *
  * The superseded V4 test-tone/I2S path and unused legacy web pages have
@@ -9,7 +9,7 @@
 
 /* Network Radio 3.0: player UI, administration UI, and WS2812B status LED. */
 
-#define NETWORK_RADIO_VERSION "4.4.0"
+#define NETWORK_RADIO_VERSION "4.4.1"
 #define NETWORK_RADIO_MAX_STATIONS 140
 #ifdef NETWORK_RADIO_NO_ENTRYPOINT
 #define NETWORK_RADIO_V8_NO_ENTRYPOINT
@@ -20,6 +20,7 @@
 
 #include <Audio.h>
 #include <LittleFS.h>
+#include <esp_private/periph_ctrl.h>
 #include <esp32-hal-psram.h>
 
 // Reuse V4's provisioning and playlist persistence helpers.
@@ -41,7 +42,7 @@
 
 namespace config {
 #ifndef NETWORK_RADIO_VERSION
-#define NETWORK_RADIO_VERSION "4.4.0"
+#define NETWORK_RADIO_VERSION "4.4.1"
 #endif
 constexpr char kFirmwareVersion[] = NETWORK_RADIO_VERSION;
 constexpr uint32_t kSerialBaud = 115200;
@@ -1752,6 +1753,17 @@ void playBootChime() {
   playbackFaultPending = false;
 }
 
+void initialiseAudioOutput() {
+  // ESP.restart() does not always reset an allocated ESP-IDF I2S peripheral.
+  // Reset both S3 I2S modules before Audio allocates its automatic channel so
+  // a software restart cannot leave setPinout() with no available channel.
+  periph_module_reset(PERIPH_I2S0_MODULE);
+  periph_module_reset(PERIPH_I2S1_MODULE);
+  audio.setPinout(config::kI2sBclk, config::kI2sLrclk,
+                  config::kI2sDataOut);
+  audio.setVolume(playerVolume);
+}
+
 void loadSecurity() {
   playerPreferences.begin(kSecurityNamespace, true);
   const String stored = playerPreferences.getString(kAdminPasswordKey, "");
@@ -2713,7 +2725,7 @@ void setup() {
   playerPreferences.begin("player", true); playerVolume = playerPreferences.getUChar("volume", playerVolume); playerPreferences.end();
   Audio::audio_info_callback = audioInfoV8;
   audio.settings.BUFFER_TRESHOLD_HLS = 32 * 1024;
-  audio.setPinout(config::kI2sBclk, config::kI2sLrclk, config::kI2sDataOut); audio.setVolume(playerVolume);
+  initialiseAudioOutput();
   playBootChime();
   const bool connected = connectSavedStation();
   if (!connected || config::kKeepSetupAccessPointAvailable) startAccessPoint();
