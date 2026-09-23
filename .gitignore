@@ -6,6 +6,7 @@ build/
 **/build/
 binaries/
 **/binaries/
+release/
 *.bin
 *.elf
 *.map

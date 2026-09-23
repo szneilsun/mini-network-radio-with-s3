@@ -1,5 +1,5 @@
 /*
- * Network Radio 4.4.4 standalone Arduino sketch.
+ * Network Radio 4.4.5 standalone Arduino sketch.
  * Project-local source dependencies are inlined in this file.
  *
  * The superseded V4 test-tone/I2S path and unused legacy web pages have
@@ -9,7 +9,7 @@
 
 /* Network Radio 3.0: player UI, administration UI, and WS2812B status LED. */
 
-#define NETWORK_RADIO_VERSION "4.4.4"
+#define NETWORK_RADIO_VERSION "4.4.5"
 #define NETWORK_RADIO_MAX_STATIONS 140
 #ifdef NETWORK_RADIO_NO_ENTRYPOINT
 #define NETWORK_RADIO_V8_NO_ENTRYPOINT
@@ -31,6 +31,26 @@ void loop();
 #include <esp_private/periph_ctrl.h>
 #include <esp32-hal-psram.h>
 
+// Apply a fixed +3 dB digital preamp after the user's volume setting and
+// immediately before I2S output. Saturation prevents signed overflow and
+// hard-clips peaks that have no remaining headroom.
+void audio_process_i2s(int32_t *outBuff, int16_t validSamples,
+                       bool *continueI2S) {
+  (void)continueI2S;
+  constexpr int32_t kPreampGainQ15 = 46286;  // 10^(3/20) * 2^15
+  for (int16_t i = 0; i < validSamples; ++i) {
+    const int64_t amplified =
+        (static_cast<int64_t>(outBuff[i]) * kPreampGainQ15) >> 15;
+    if (amplified > INT32_MAX) {
+      outBuff[i] = INT32_MAX;
+    } else if (amplified < INT32_MIN) {
+      outBuff[i] = INT32_MIN;
+    } else {
+      outBuff[i] = static_cast<int32_t>(amplified);
+    }
+  }
+}
+
 // Reuse V4's provisioning and playlist persistence helpers.
 #ifndef NETWORK_RADIO_VERSION
 #define NETWORK_RADIO_VERSION "0.5.0-playback"
@@ -50,7 +70,7 @@ void loop();
 
 namespace config {
 #ifndef NETWORK_RADIO_VERSION
-#define NETWORK_RADIO_VERSION "4.4.4"
+#define NETWORK_RADIO_VERSION "4.4.5"
 #endif
 constexpr char kFirmwareVersion[] = NETWORK_RADIO_VERSION;
 constexpr uint32_t kSerialBaud = 115200;
