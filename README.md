@@ -1,6 +1,6 @@
 # ESP32-S3 网络收音机
 
-当前版本为 **4.5.0**。项目基于 ESP32-S3 N16R8，实现网络电台播放、手机与桌面网页控制、管理后台、Wi-Fi 自动恢复、OTA、诊断日志、LittleFS 台标和板载 RGB 状态灯。
+当前版本为 **4.5.1**。项目基于 ESP32-S3 N16R8，实现网络电台播放、手机与桌面网页控制、管理后台、Wi-Fi 自动恢复、OTA、诊断日志、LittleFS 台标和板载 RGB 状态灯。
 
 ## 目录结构
 
@@ -104,6 +104,6 @@ arduino-cli lib install "ESP32-audioI2S"
 ./tools/build-firmware.sh --upload --port /dev/cu.usbserial-XXXX
 ```
 
-输出位于 `build/esp32-network-radio/`，构建脚本会自动校验 16 MiB Flash 布局。正式发布包存放在 `release/`；已归档的 OTA 发布包为 `network-radio-v4.4.5-ota.zip`，4.5.0 的当前编译固件位于构建目录。
+输出位于 `build/esp32-network-radio/`，构建脚本会自动校验 16 MiB Flash 布局。正式发布包存放在 `release/`；已归档的 OTA 发布包为 `network-radio-v4.4.5-ota.zip`，4.5.1 的当前编译固件位于构建目录。
 
 不要提交 Wi-Fi 密码、管理员密码、私有流地址或设备专属密钥。
