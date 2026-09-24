@@ -1,5 +1,5 @@
 /*
- * Network Radio 4.5.1 standalone Arduino sketch.
+ * Network Radio 4.6.0 standalone Arduino sketch.
  * Project-local source dependencies are inlined in this file.
  *
  * The superseded V4 test-tone/I2S path and unused legacy web pages have
@@ -9,7 +9,7 @@
 
 /* Network Radio 3.0: player UI, administration UI, and WS2812B status LED. */
 
-#define NETWORK_RADIO_VERSION "4.5.1"
+#define NETWORK_RADIO_VERSION "4.6.0"
 #define NETWORK_RADIO_MAX_STATIONS 140
 #ifdef NETWORK_RADIO_NO_ENTRYPOINT
 #define NETWORK_RADIO_V8_NO_ENTRYPOINT
@@ -34,6 +34,8 @@ void loop();
 void audio_process_i2s(int32_t *outBuff, int16_t validSamples,
                        bool *continueI2S);
 
+volatile uint32_t audioOutputPeak = 0;
+
 // Apply a fixed +3 dB digital preamp after the user's volume setting and
 // immediately before I2S output. Saturation prevents signed overflow and
 // hard-clips peaks that have no remaining headroom.
@@ -41,6 +43,7 @@ void audio_process_i2s(int32_t *outBuff, int16_t validSamples,
                        bool *continueI2S) {
   (void)continueI2S;
   constexpr int32_t kPreampGainQ15 = 46286;  // 10^(3/20) * 2^15
+  uint32_t blockPeak = 0;
   for (int16_t i = 0; i < validSamples; ++i) {
     const int64_t amplified =
         (static_cast<int64_t>(outBuff[i]) * kPreampGainQ15) >> 15;
@@ -51,7 +54,12 @@ void audio_process_i2s(int32_t *outBuff, int16_t validSamples,
     } else {
       outBuff[i] = static_cast<int32_t>(amplified);
     }
+    const int64_t sample = outBuff[i];
+    const uint32_t magnitude = static_cast<uint32_t>(
+        sample < 0 ? -sample : sample);
+    if (magnitude > blockPeak) blockPeak = magnitude;
   }
+  if (blockPeak > audioOutputPeak) audioOutputPeak = blockPeak;
 }
 
 // Reuse V4's provisioning and playlist persistence helpers.
@@ -74,7 +82,7 @@ void audio_process_i2s(int32_t *outBuff, int16_t validSamples,
 
 namespace config {
 #ifndef NETWORK_RADIO_VERSION
-#define NETWORK_RADIO_VERSION "4.5.1"
+#define NETWORK_RADIO_VERSION "4.6.0"
 #endif
 constexpr char kFirmwareVersion[] = NETWORK_RADIO_VERSION;
 constexpr uint32_t kSerialBaud = 115200;
@@ -1484,6 +1492,7 @@ namespace {
 constexpr char kSecurityNamespace[] = "security";
 constexpr char kAdminPasswordKey[] = "admin_pass";
 constexpr char kUiNamespace[] = "ui";
+constexpr char kLedNamespace[] = "led";
 constexpr char kAdminUser[] = "admin";
 constexpr uint8_t kLogCapacity = 36;
 constexpr uint32_t kWifiRetryMs = 10000;
@@ -1497,6 +1506,7 @@ constexpr uint8_t kBootChimeVolume = 21;
 constexpr uint8_t kStatusLedPin = 48;
 constexpr uint8_t kStatusLedBrightness = 36;
 constexpr uint8_t kPlayingLedBrightness = 255;
+constexpr uint32_t kPlayingLedRainbowPeriodMs = 8000;
 constexpr uint32_t kStatusLedRefreshMs = 20;
 constexpr size_t kLegacyBuiltinStationCount = 100;
 // Bump the import markers after the resource image migration so devices whose
@@ -1532,6 +1542,51 @@ const char *pendingPlaybackReason = "station selected";
 String otaError;
 
 enum class StatusLedMode : uint8_t { Off, Buffering, Playing, Error, Ota };
+enum class PlayingLedEffect : uint8_t {
+  Rainbow,
+  ColorBreathe,
+  Aurora,
+  Flame,
+  Heartbeat,
+  Meteor,
+  Pulse,
+  RandomFade,
+  Music,
+  Signal,
+  FixedBreathe,
+  Temperature,
+  Starlight
+};
+
+struct RgbColor {
+  uint8_t red;
+  uint8_t green;
+  uint8_t blue;
+};
+
+struct PlayingLedEffectOption {
+  const char *id;
+  PlayingLedEffect effect;
+};
+
+constexpr PlayingLedEffectOption kPlayingLedEffectOptions[] = {
+    {"rainbow", PlayingLedEffect::Rainbow},
+    {"color_breathe", PlayingLedEffect::ColorBreathe},
+    {"aurora", PlayingLedEffect::Aurora},
+    {"flame", PlayingLedEffect::Flame},
+    {"heartbeat", PlayingLedEffect::Heartbeat},
+    {"meteor", PlayingLedEffect::Meteor},
+    {"pulse", PlayingLedEffect::Pulse},
+    {"random_fade", PlayingLedEffect::RandomFade},
+    {"music", PlayingLedEffect::Music},
+    {"signal", PlayingLedEffect::Signal},
+    {"fixed_breathe", PlayingLedEffect::FixedBreathe},
+    {"temperature", PlayingLedEffect::Temperature},
+    {"starlight", PlayingLedEffect::Starlight},
+};
+
+PlayingLedEffect playingLedEffect = PlayingLedEffect::Rainbow;
+uint32_t playingLedFixedColor = 0x0080FF;
 
 bool audioMessageIndicatesError(const char *message) {
   if (message == nullptr) return false;
@@ -1549,6 +1604,172 @@ bool timeReached(uint32_t now, uint32_t deadline) {
   return static_cast<int32_t>(now - deadline) >= 0;
 }
 
+RgbColor scaleRgb(RgbColor color, uint8_t level) {
+  color.red = (static_cast<uint16_t>(color.red) * level + 127U) / 255U;
+  color.green = (static_cast<uint16_t>(color.green) * level + 127U) / 255U;
+  color.blue = (static_cast<uint16_t>(color.blue) * level + 127U) / 255U;
+  return color;
+}
+
+RgbColor blendRgb(RgbColor from, RgbColor to, uint8_t amount) {
+  return {
+      static_cast<uint8_t>(from.red +
+                           (static_cast<int16_t>(to.red) - from.red) *
+                               amount / 255),
+      static_cast<uint8_t>(from.green +
+                           (static_cast<int16_t>(to.green) - from.green) *
+                               amount / 255),
+      static_cast<uint8_t>(from.blue +
+                           (static_cast<int16_t>(to.blue) - from.blue) *
+                               amount / 255),
+  };
+}
+
+RgbColor rainbowRgb(uint16_t wheel) {
+  wheel %= 768U;
+  const uint8_t offset = wheel & 0xFFU;
+  switch (wheel >> 8) {
+    case 0: return {static_cast<uint8_t>(255U - offset), offset, 0};
+    case 1: return {0, static_cast<uint8_t>(255U - offset), offset};
+    default: return {offset, 0, static_cast<uint8_t>(255U - offset)};
+  }
+}
+
+uint8_t breathingLevel(uint32_t now, uint32_t periodMs,
+                       uint8_t minimum = 8) {
+  const uint32_t halfPeriodMs = periodMs / 2U;
+  const uint32_t position = now % periodMs;
+  const uint16_t ramp = position < halfPeriodMs
+                            ? position * 255U / halfPeriodMs
+                            : (periodMs - position) * 255U / halfPeriodMs;
+  return minimum + static_cast<uint32_t>(ramp) * ramp *
+                       (255U - minimum) / 65025U;
+}
+
+uint8_t trianglePulse(uint32_t position, uint32_t center,
+                      uint32_t halfWidth) {
+  const uint32_t distance = position > center ? position - center
+                                               : center - position;
+  if (distance >= halfWidth) return 0;
+  return (halfWidth - distance) * 255U / halfWidth;
+}
+
+uint32_t ledHash(uint32_t value) {
+  value ^= value >> 16;
+  value *= 0x7FEB352DU;
+  value ^= value >> 15;
+  value *= 0x846CA68BU;
+  return value ^ (value >> 16);
+}
+
+RgbColor renderPlayingLedEffect(uint32_t now) {
+  switch (playingLedEffect) {
+    case PlayingLedEffect::ColorBreathe: {
+      const RgbColor color = rainbowRgb((now % 12000U) * 768U / 12000U);
+      return scaleRgb(color, breathingLevel(now, 4000U));
+    }
+    case PlayingLedEffect::Aurora: {
+      constexpr RgbColor colors[] = {
+          {0, 220, 180}, {0, 70, 255}, {130, 0, 255},
+          {0, 255, 100}, {0, 220, 180}};
+      const uint32_t position = now % 12000U;
+      const uint8_t section = position / 3000U;
+      const uint8_t amount = (position % 3000U) * 255U / 3000U;
+      return scaleRgb(blendRgb(colors[section], colors[section + 1], amount),
+                      210);
+    }
+    case PlayingLedEffect::Flame: {
+      const uint32_t noise = ledHash(now / 70U);
+      return {static_cast<uint8_t>(140U + noise % 116U),
+              static_cast<uint8_t>(18U + (noise >> 8) % 92U),
+              static_cast<uint8_t>((noise >> 20) % 9U)};
+    }
+    case PlayingLedEffect::Heartbeat: {
+      const uint32_t position = now % 1600U;
+      const uint8_t first = trianglePulse(position, 110U, 110U);
+      const uint8_t second = trianglePulse(position, 390U, 140U);
+      const uint8_t level = first > second ? first : second;
+      return scaleRgb({255, 0, 36}, level);
+    }
+    case PlayingLedEffect::Meteor: {
+      const uint32_t position = now % 1800U;
+      const uint8_t level = position < 100U
+                                ? position * 255U / 100U
+                                : (1800U - position) * 255U / 1700U;
+      return scaleRgb({170, 220, 255}, level);
+    }
+    case PlayingLedEffect::Pulse: {
+      const uint32_t position = now % 1700U;
+      const uint8_t level = position < 1400U
+                                ? 8U + position * 247U / 1400U
+                                : 0;
+      return scaleRgb({170, 35, 255}, level);
+    }
+    case PlayingLedEffect::RandomFade: {
+      const uint32_t interval = now / 3500U;
+      const uint16_t fromWheel = ledHash(interval) % 768U;
+      const uint16_t toWheel = ledHash(interval + 1U) % 768U;
+      const uint32_t linear = (now % 3500U) * 255U / 3500U;
+      const uint8_t smooth = linear * linear * (765U - 2U * linear) /
+                             65025U;
+      return blendRgb(rainbowRgb(fromWheel), rainbowRgb(toWheel), smooth);
+    }
+    case PlayingLedEffect::Music: {
+      static uint32_t envelope = 0;
+      static uint32_t reference = 1;
+      const uint32_t peak = audioOutputPeak;
+      audioOutputPeak = 0;
+      envelope = peak > envelope
+                     ? peak
+                     : static_cast<uint64_t>(envelope) * 94U / 100U;
+      reference = envelope > reference ? envelope
+                                       : reference - reference / 1000U;
+      if (reference == 0) reference = 1;
+      uint32_t response = static_cast<uint64_t>(envelope) * 239U /
+                          reference;
+      if (response > 239U) response = 239U;
+      const uint8_t level = 16U + response;
+      return scaleRgb(rainbowRgb((now % 10000U) * 768U / 10000U), level);
+    }
+    case PlayingLedEffect::Signal: {
+      int32_t quality = (WiFi.RSSI() + 90) * 255 / 50;
+      if (quality < 0) quality = 0;
+      if (quality > 255) quality = 255;
+      return {static_cast<uint8_t>(255 - quality),
+              static_cast<uint8_t>(quality),
+              static_cast<uint8_t>(quality / 8)};
+    }
+    case PlayingLedEffect::FixedBreathe: {
+      const RgbColor color = {
+          static_cast<uint8_t>(playingLedFixedColor >> 16),
+          static_cast<uint8_t>(playingLedFixedColor >> 8),
+          static_cast<uint8_t>(playingLedFixedColor)};
+      return scaleRgb(color, breathingLevel(now, 4000U));
+    }
+    case PlayingLedEffect::Temperature: {
+      const uint32_t position = now % 12000U;
+      const uint8_t amount = position < 6000U
+                                 ? position * 255U / 6000U
+                                 : (12000U - position) * 255U / 6000U;
+      return blendRgb({255, 72, 4}, {155, 210, 255}, amount);
+    }
+    case PlayingLedEffect::Starlight: {
+      const uint32_t interval = now / 1400U;
+      const uint32_t position = now % 1400U;
+      const uint32_t start = ledHash(interval) % 1050U;
+      uint8_t level = 10;
+      if (position >= start && position < start + 180U) {
+        level = trianglePulse(position, start + 90U, 90U);
+      }
+      return scaleRgb({175, 215, 255}, level);
+    }
+    case PlayingLedEffect::Rainbow:
+    default:
+      return rainbowRgb((now % kPlayingLedRainbowPeriodMs) * 768U /
+                        kPlayingLedRainbowPeriodMs);
+  }
+}
+
 void updateStatusLed(bool force = false) {
   static uint32_t lastUpdateAt = 0;
   static uint32_t lastColor = UINT32_MAX;
@@ -1564,20 +1785,22 @@ void updateStatusLed(bool force = false) {
   else if (playbackEnabled) mode = StatusLedMode::Buffering;
 
   uint8_t red = 0, green = 0, blue = 0;
-  if (mode == StatusLedMode::Buffering || mode == StatusLedMode::Playing) {
+  if (mode == StatusLedMode::Buffering) {
     constexpr uint32_t periodMs = 4000;
     constexpr uint32_t halfPeriodMs = periodMs / 2;
     const uint32_t position = now % periodMs;
     const uint16_t ramp = position < halfPeriodMs
                               ? position * 255U / halfPeriodMs
                               : (periodMs - position) * 255U / halfPeriodMs;
-    const uint8_t peakBrightness = mode == StatusLedMode::Playing
-                                       ? kPlayingLedBrightness
-                                       : kStatusLedBrightness;
     const uint8_t level = 1U + static_cast<uint32_t>(ramp) * ramp *
-                                  (peakBrightness - 1U) / 65025U;
-    if (mode == StatusLedMode::Buffering) red = level;
-    else blue = level;
+                                  (kStatusLedBrightness - 1U) / 65025U;
+    red = level;
+  } else if (mode == StatusLedMode::Playing) {
+    const RgbColor color =
+        scaleRgb(renderPlayingLedEffect(now), kPlayingLedBrightness);
+    red = color.red;
+    green = color.green;
+    blue = color.blue;
   } else if (mode == StatusLedMode::Error) {
     red = (now % 300U) < 150U ? kStatusLedBrightness : 0;
   } else if (mode == StatusLedMode::Ota) {
@@ -1941,6 +2164,44 @@ bool isHexColor(const String &value) {
   return true;
 }
 
+bool parsePlayingLedEffect(const String &id, PlayingLedEffect &effect) {
+  for (const PlayingLedEffectOption &option : kPlayingLedEffectOptions) {
+    if (id == option.id) {
+      effect = option.effect;
+      return true;
+    }
+  }
+  return false;
+}
+
+const char *playingLedEffectId() {
+  for (const PlayingLedEffectOption &option : kPlayingLedEffectOptions) {
+    if (playingLedEffect == option.effect) return option.id;
+  }
+  return "rainbow";
+}
+
+void loadLedSettings() {
+  Preferences ledPreferences;
+  if (!ledPreferences.begin(kLedNamespace, true)) return;
+  const String effectId =
+      ledPreferences.getString("effect", playingLedEffectId());
+  const uint32_t fixedColor =
+      ledPreferences.getUInt("fixed_color", playingLedFixedColor);
+  ledPreferences.end();
+  PlayingLedEffect effect;
+  if (parsePlayingLedEffect(effectId, effect)) playingLedEffect = effect;
+  playingLedFixedColor = fixedColor & 0xFFFFFFU;
+}
+
+String ledSettingsJson() {
+  char color[8];
+  snprintf(color, sizeof(color), "#%06lX",
+           static_cast<unsigned long>(playingLedFixedColor));
+  return "{\"effect\":\"" + String(playingLedEffectId()) +
+         "\",\"fixed_color\":\"" + String(color) + "\"}";
+}
+
 bool isKnownTexture(const String &value) {
   return value == "none" || value == "dots" || value == "grid" ||
          value == "diagonal" || value == "cloud" || value == "lattice" ||
@@ -1967,6 +2228,38 @@ String uiThemeJson() {
 }
 
 bool requireAdmin();
+
+void handleSaveLedSettings() {
+  if (!requireAdmin()) return;
+  const String effectId = server.arg("effect");
+  const String fixedColorText = server.arg("fixed_color");
+  PlayingLedEffect effect;
+  if (!parsePlayingLedEffect(effectId, effect) ||
+      !isHexColor(fixedColorText)) {
+    sendJson("{\"error\":\"invalid LED settings\"}", 400);
+    return;
+  }
+  const uint32_t fixedColor =
+      strtoul(fixedColorText.c_str() + 1, nullptr, 16) & 0xFFFFFFU;
+  Preferences ledPreferences;
+  if (!ledPreferences.begin(kLedNamespace, false)) {
+    sendJson("{\"error\":\"could not open LED settings\"}", 500);
+    return;
+  }
+  const bool saved =
+      ledPreferences.putString("effect", effectId) == effectId.length() &&
+      ledPreferences.putUInt("fixed_color", fixedColor) == sizeof(uint32_t);
+  ledPreferences.end();
+  if (!saved) {
+    sendJson("{\"error\":\"could not save LED settings\"}", 500);
+    return;
+  }
+  playingLedEffect = effect;
+  playingLedFixedColor = fixedColor;
+  audioOutputPeak = 0;
+  updateStatusLed(true);
+  sendJson(ledSettingsJson());
+}
 
 void handleSaveUiTheme() {
   if (!requireAdmin()) return;
@@ -2871,7 +3164,8 @@ void handleFactoryReset() {
   if (!requireAdmin()) return;
   const char *namespaces[] = {config::kWifiNamespace, config::kPlaylistNamespace,
                               "player", "catalog", kSecurityNamespace,
-                              kUiNamespace, config::kSerialLogNamespace};
+                              kUiNamespace, kLedNamespace,
+                              config::kSerialLogNamespace};
   bool ok = true;
   for (const char *name : namespaces) { preferences.begin(name, false); ok = preferences.clear() && ok; preferences.end(); }
   if (playlistStorageReady) {
@@ -3035,7 +3329,7 @@ document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh()}
 )HTML";
 
 constexpr char kAdminHtmlV302[] PROGMEM =
-R"HTML(<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>网络收音机 4.5.1 管理</title><style>
+R"HTML(<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>网络收音机 4.6.0 管理</title><style>
 :root{color-scheme:dark}body{max-width:880px;margin:24px auto;padding:0 16px;background:#101827;color:#e5e7eb;font:16px system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif}section,pre,.station,.wifi-network{background:#172234;padding:14px;border-radius:10px;margin:14px 0}button,input,select{box-sizing:border-box;padding:9px;margin:4px;border:0;border-radius:6px}input,select{width:100%}button{background:#38bdf8;color:#062032;font-weight:700;cursor:pointer}.warn{background:#fbbf24}.danger{background:#fb7185}.station img,.station .fallback{display:inline-grid;width:48px;height:48px;object-fit:contain;object-position:center;background:#fff;border-radius:8px;vertical-align:middle;margin-right:10px}.station .fallback{place-items:center;background:#e89c27;color:#fff;font-weight:700}.station small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#b7c6da}.actions{display:block}.station button{min-width:82px;padding:11px 17px}.wifi-network{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px}.wifi-network b{overflow:hidden;text-overflow:ellipsis}.wifi-network button{width:auto;margin:0}.active{outline:2px solid #38bdf8}.state{font-size:1.1em;color:#67e8f9;margin-bottom:24px}.transport{display:flex;align-items:center;justify-content:center;gap:clamp(28px,8vw,72px);margin:18px 0 28px}.transport button{display:grid;place-items:center;margin:0}.skip{width:76px;height:64px;border-radius:18px;font-size:25px;background:#263449;color:#dce6f5}.play{width:92px;height:92px;border-radius:50%;font-size:36px;background:#f8fafc;color:#172234;box-shadow:0 10px 28px #0005}.volume-head{display:flex;justify-content:space-between;align-items:center;margin:0 6px 8px;color:#cbd5e1}.volume-head b{color:#fff;font-size:1.15em}.volume{width:calc(100% - 10px);accent-color:#38bdf8}.theme-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.theme-grid label{display:grid;gap:6px}.theme-grid input,.theme-grid select{margin:0}.theme-grid input[type=color]{height:54px;padding:4px;border:1px solid #ffffff26;border-radius:10px;background:#fff;color-scheme:light;cursor:pointer}.theme-grid input[type=color]::-webkit-color-swatch-wrapper{padding:0}.theme-grid input[type=color]::-webkit-color-swatch{border:0;border-radius:6px}.theme-grid input[type=color]::-moz-color-swatch{border:0;border-radius:6px}pre{overflow:auto;white-space:pre-wrap}a{color:#67e8f9}@media(max-width:560px){.theme-grid{grid-template-columns:1fr}.station{overflow-x:auto;white-space:nowrap}.station small{white-space:normal}.station button{min-width:auto;padding:9px 11px;margin:3px 2px}}</style></head>
 <body><h1>ESP32-S3 网络收音机</h1><p>版本号：)HTML"
 NETWORK_RADIO_VERSION
@@ -3044,6 +3338,7 @@ __DATE__ " " __TIME__
 R"HTML(　<a href="/">返回播放器</a></p>
 <section class="player"><h2>正在播放</h2><div id="now" class="state">读取中…</div><div class="transport"><button id="previous" class="skip" aria-label="上一台">◀◀</button><button id="play" class="play" aria-label="播放或暂停">▶</button><button id="next" class="skip" aria-label="下一台">▶▶</button></div><div class="volume-head"><span>音量</span><b><span id="volumeText">--</span>/21</b></div><input id="volume" class="volume" type="range" min="0" max="21"></section>
 <section><h2>用户页面外观</h2><div class="theme-grid"><label>页面颜色<input id="background" type="color" value="#656b6a"></label><label>强调颜色<input id="accent" type="color" value="#f2a51a"></label><label>纹理效果<select id="texture"><option value="none">无纹理</option><option value="dots">圆点</option><option value="grid">网格</option><option value="diagonal">斜纹</option><option value="cloud">祥云</option><option value="lattice">回纹窗格</option><option value="waves">水波</option><option value="bamboo">竹影</option><option value="ricepaper">宣纸</option><option value="porcelain">青花</option></select></label></div><button id="saveTheme">保存页面外观</button></section>
+<section><h2>RGB 播放灯效</h2><p>仅在正常播放时生效；缓冲、错误和 OTA 状态灯优先显示。</p><div class="theme-grid"><label>灯效<select id="ledEffect"><option value="rainbow">彩虹循环</option><option value="color_breathe">呼吸变色</option><option value="aurora">极光</option><option value="flame">火焰</option><option value="heartbeat">心跳</option><option value="meteor">流星</option><option value="pulse">脉冲</option><option value="random_fade">随机柔变</option><option value="music">音乐律动</option><option value="signal">状态渐变（Wi-Fi 信号）</option><option value="fixed_breathe">固定色呼吸</option><option value="temperature">色温变化</option><option value="starlight">闪烁星光</option></select></label><label>固定呼吸颜色<input id="ledFixedColor" type="color" value="#0080ff"></label></div><button id="saveLedEffect">保存 RGB 灯效</button></section>
 <section><h2>播放列表</h2><div id="stations">加载中…</div><h3 id="formTitle">新增电台</h3><input id="editId" type="hidden"><input id="stationName" placeholder="电台名称"><input id="stationUrl" placeholder="http(s):// 音频流地址"><button id="saveStation">保存</button><button id="cancelEdit" class="warn">取消编辑</button></section>
 <section><h2>Wi-Fi</h2><p>最多保存 5 个网络；启动时会选择信号最强且可连接的已保存网络。</p><div id="savedWifi">读取已保存网络…</div><button id="scanWifi">扫描网络</button><select id="ssid"><option value="">选择 Wi-Fi</option></select><input id="wifiPassword" type="password" placeholder="Wi-Fi 密码（更新同名网络时请重新填写）"><button id="saveWifi">保存网络并重启连接</button><button id="forgetWifi" class="warn">清除全部 Wi-Fi 设置</button></section>
 <section><h2>串口日志</h2><p>开关会立即生效并保存；关闭只停止串口输出，诊断日志仍会保留。</p><div id="serialLogs" style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px"><label style="display:flex;align-items:center;gap:8px"><input id="logSystem" type="checkbox" style="width:auto">系统 / 存储</label><label style="display:flex;align-items:center;gap:8px"><input id="logWifi" type="checkbox" style="width:auto">Wi-Fi</label><label style="display:flex;align-items:center;gap:8px"><input id="logAudio" type="checkbox" style="width:auto">音频 / 播放恢复</label><label style="display:flex;align-items:center;gap:8px"><input id="logTouch" type="checkbox" style="width:auto">触摸按键</label></div><small id="serialLogState">正在读取…</small></section>
@@ -3072,13 +3367,15 @@ async function loadSavedWifi(){try{renderSavedWifi(await api('/api/wifi'))}catch
 async function saveWifi(){try{await api('/api/wifi',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:enc({ssid:q('#ssid').value,password:q('#wifiPassword').value})});q('#status').textContent='Wi-Fi 已保存，设备正在重启并选择可用网络…'}catch(e){alert(e.message)}}
 async function deleteWifi(ssid){if(!confirm('删除已保存的 Wi-Fi “'+ssid+'”？'))return;try{await api('/api/wifi/delete?ssid='+encodeURIComponent(ssid),{method:'POST'});q('#status').textContent='Wi-Fi 已删除，设备正在重启…'}catch(e){alert(e.message)}}
 async function saveTheme(){try{const data=await api('/api/ui-theme',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:enc({background:q('#background').value,accent:q('#accent').value,texture:q('#texture').value})});q('#background').value=data.background;q('#accent').value=data.accent;q('#texture').value=data.texture;alert('页面外观已保存')}catch(e){alert(e.message)}}
+function applyLedSettings(data){q('#ledEffect').value=data.effect;q('#ledFixedColor').value=data.fixed_color}
+async function saveLedSettings(){try{const data=await api('/api/led-effect',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:enc({effect:q('#ledEffect').value,fixed_color:q('#ledFixedColor').value})});applyLedSettings(data);alert('RGB 灯效已保存并立即生效')}catch(e){alert(e.message)}}
 function applySerialLogs(data){q('#logSystem').checked=!!data.system;q('#logWifi').checked=!!data.wifi;q('#logAudio').checked=!!data.audio;q('#logTouch').checked=!!data.touch;q('#serialLogState').textContent='已保存'}
 async function loadSerialLogs(){try{applySerialLogs(await api('/api/serial-logs'))}catch(e){q('#serialLogState').textContent='读取失败：'+e.message}}
 async function saveSerialLogs(){q('#serialLogState').textContent='正在保存…';try{const data=await api('/api/serial-logs',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:enc({system:q('#logSystem').checked,wifi:q('#logWifi').checked,audio:q('#logAudio').checked,touch:q('#logTouch').checked})});applySerialLogs(data)}catch(e){q('#serialLogState').textContent='保存失败：'+e.message;alert(e.message)}}
 async function savePassword(){try{await api('/api/security/password',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:enc({password:q('#adminPassword').value})});alert('管理密码已保存；请刷新页面并用 admin 登录。')}catch(e){alert(e.message)}}
 async function uploadFirmware(file){if(!file||!confirm('上传后设备会重启，继续？'))return;const form=new FormData;form.append('firmware',file);try{await api('/api/ota',{method:'POST',body:form});q('#status').textContent='升级完成，设备正在重启…'}catch(e){alert(e.message)}}
 async function uploadResources(file){if(!file||!confirm('资源将被替换，上传后设备会重启；Wi-Fi 与电台设置会保留。继续？'))return;const form=new FormData;form.append('resources',file);try{await api('/api/ota/resources',{method:'POST',body:form});q('#status').textContent='资源升级完成，设备正在重启…'}catch(e){alert(e.message)}}
-q('#previous').addEventListener('click',()=>post('/api/player/previous'));q('#play').addEventListener('click',()=>post(playerState==='playing'?'/api/player/stop':'/api/player/play'));q('#next').addEventListener('click',()=>post('/api/player/next'));q('#volume').addEventListener('input',e=>{q('#volumeText').textContent=e.target.value;clearTimeout(volumeTimer);volumeTimer=setTimeout(()=>post('/api/player/volume?value='+encodeURIComponent(e.target.value)),180)});q('#saveStation').addEventListener('click',saveStation);q('#cancelEdit').addEventListener('click',clearForm);q('#scanWifi').addEventListener('click',scanWifi);q('#saveWifi').addEventListener('click',saveWifi);q('#forgetWifi').addEventListener('click',()=>{if(confirm('清除全部已保存的 Wi-Fi？'))post('/api/wifi/forget')});q('#saveTheme').addEventListener('click',saveTheme);['#logSystem','#logWifi','#logAudio','#logTouch'].forEach(id=>q(id).addEventListener('change',saveSerialLogs));q('#savePassword').addEventListener('click',savePassword);q('#chooseFirmware').addEventListener('click',()=>q('#firmware').click());q('#firmware').addEventListener('change',e=>uploadFirmware(e.target.files[0]));q('#chooseResources').addEventListener('click',()=>q('#resources').click());q('#resources').addEventListener('change',e=>uploadResources(e.target.files[0]));q('#downloadLog').addEventListener('click',()=>location='/api/diagnostics/download');q('#factoryReset').addEventListener('click',()=>{if(confirm('这将清除 Wi-Fi、电台、音量、页面外观和管理密码，确定？'))post('/api/factory-reset')});document.addEventListener('visibilitychange',()=>{if(!document.hidden)poll()});Promise.all([loadPlaylist(),refreshPlayer(),refreshStatus(),loadSavedWifi(),loadSerialLogs(),api('/api/ui-theme').then(t=>{q('#background').value=t.background;q('#accent').value=t.accent;q('#texture').value=t.texture})]).then(poll).catch(e=>q('#status').textContent='错误：'+e.message);
+q('#previous').addEventListener('click',()=>post('/api/player/previous'));q('#play').addEventListener('click',()=>post(playerState==='playing'?'/api/player/stop':'/api/player/play'));q('#next').addEventListener('click',()=>post('/api/player/next'));q('#volume').addEventListener('input',e=>{q('#volumeText').textContent=e.target.value;clearTimeout(volumeTimer);volumeTimer=setTimeout(()=>post('/api/player/volume?value='+encodeURIComponent(e.target.value)),180)});q('#saveStation').addEventListener('click',saveStation);q('#cancelEdit').addEventListener('click',clearForm);q('#scanWifi').addEventListener('click',scanWifi);q('#saveWifi').addEventListener('click',saveWifi);q('#forgetWifi').addEventListener('click',()=>{if(confirm('清除全部已保存的 Wi-Fi？'))post('/api/wifi/forget')});q('#saveTheme').addEventListener('click',saveTheme);q('#saveLedEffect').addEventListener('click',saveLedSettings);['#logSystem','#logWifi','#logAudio','#logTouch'].forEach(id=>q(id).addEventListener('change',saveSerialLogs));q('#savePassword').addEventListener('click',savePassword);q('#chooseFirmware').addEventListener('click',()=>q('#firmware').click());q('#firmware').addEventListener('change',e=>uploadFirmware(e.target.files[0]));q('#chooseResources').addEventListener('click',()=>q('#resources').click());q('#resources').addEventListener('change',e=>uploadResources(e.target.files[0]));q('#downloadLog').addEventListener('click',()=>location='/api/diagnostics/download');q('#factoryReset').addEventListener('click',()=>{if(confirm('这将清除 Wi-Fi、电台、音量、页面外观、RGB 灯效和管理密码，确定？'))post('/api/factory-reset')});document.addEventListener('visibilitychange',()=>{if(!document.hidden)poll()});Promise.all([loadPlaylist(),refreshPlayer(),refreshStatus(),loadSavedWifi(),loadSerialLogs(),api('/api/ui-theme').then(t=>{q('#background').value=t.background;q('#accent').value=t.accent;q('#texture').value=t.texture}),api('/api/led-effect').then(applyLedSettings)]).then(poll).catch(e=>q('#status').textContent='错误：'+e.message);
 </script></body></html>
 )HTML";
 
@@ -3122,6 +3419,10 @@ void configureWebServerV8() {
   server.on("/api/serial-logs", HTTP_POST, handleSaveSerialLogSettings);
   server.on("/api/ui-theme", HTTP_GET, [] { if (requireAdmin()) sendJson(uiThemeJson()); });
   server.on("/api/ui-theme", HTTP_POST, handleSaveUiTheme);
+  server.on("/api/led-effect", HTTP_GET, [] {
+    if (requireAdmin()) sendJson(ledSettingsJson());
+  });
+  server.on("/api/led-effect", HTTP_POST, handleSaveLedSettings);
   server.on("/api/factory-reset", HTTP_POST, handleFactoryReset);
   server.on("/api/ota", HTTP_POST, handleOtaResult, handleOtaUpload);
   server.on("/api/ota/resources", HTTP_POST, handleOtaResult, handleResourceOtaUpload);
@@ -3155,6 +3456,7 @@ void setup() {
   enrichStationIcons();
   sortStationsByRegionOnce(newsStationsAdded);
   loadUiTheme();
+  loadLedSettings();
   playerPreferences.begin("player", true); playerVolume = playerPreferences.getUChar("volume", playerVolume); playerPreferences.end();
   Audio::audio_info_callback = audioInfoV8;
   audio.settings.BUFFER_TRESHOLD_HLS = 32 * 1024;
@@ -3162,6 +3464,7 @@ void setup() {
   // startup chime and the subsequent network stream.
   initialiseAudioOutput();
   playBootChime();
+  audioOutputPeak = 0;
   const bool connected = connectSavedStation();
   if (!connected || config::kKeepSetupAccessPointAvailable) startAccessPoint();
   wasStationConnected = connected;
