@@ -1,5 +1,5 @@
 /*
- * Network Radio 4.4.5 standalone Arduino sketch.
+ * Network Radio 4.5.0 standalone Arduino sketch.
  * Project-local source dependencies are inlined in this file.
  *
  * The superseded V4 test-tone/I2S path and unused legacy web pages have
@@ -9,7 +9,7 @@
 
 /* Network Radio 3.0: player UI, administration UI, and WS2812B status LED. */
 
-#define NETWORK_RADIO_VERSION "4.4.5"
+#define NETWORK_RADIO_VERSION "4.5.0"
 #define NETWORK_RADIO_MAX_STATIONS 140
 #ifdef NETWORK_RADIO_NO_ENTRYPOINT
 #define NETWORK_RADIO_V8_NO_ENTRYPOINT
@@ -30,6 +30,9 @@ void loop();
 #include <LittleFS.h>
 #include <esp_private/periph_ctrl.h>
 #include <esp32-hal-psram.h>
+
+void audio_process_i2s(int32_t *outBuff, int16_t validSamples,
+                       bool *continueI2S);
 
 // Apply a fixed +3 dB digital preamp after the user's volume setting and
 // immediately before I2S output. Saturation prevents signed overflow and
@@ -67,18 +70,31 @@ void audio_process_i2s(int32_t *outBuff, int16_t validSamples,
 #include <Preferences.h>
 #include <WebServer.h>
 #include <WiFi.h>
+#include <stdarg.h>
 
 namespace config {
 #ifndef NETWORK_RADIO_VERSION
-#define NETWORK_RADIO_VERSION "4.4.5"
+#define NETWORK_RADIO_VERSION "4.5.0"
 #endif
 constexpr char kFirmwareVersion[] = NETWORK_RADIO_VERSION;
 constexpr uint32_t kSerialBaud = 115200;
 constexpr gpio_num_t kI2sBclk = GPIO_NUM_4;
 constexpr gpio_num_t kI2sLrclk = GPIO_NUM_5;
 constexpr gpio_num_t kI2sDataOut = GPIO_NUM_6;
+constexpr uint8_t kPreviousTouchPin = 1;  // ESP32-S3 Touch1
+constexpr uint8_t kNextTouchPin = 2;      // ESP32-S3 Touch2
+constexpr uint32_t kTouchScanIntervalMs = 25;
+constexpr uint32_t kTouchDebugIntervalMs = 500;
+constexpr uint8_t kTouchCalibrationSamples = 32;
+constexpr uint8_t kTouchDebounceSamples = 3;
+constexpr uint8_t kDefaultTouchSensitivityPercent = 8;
+constexpr uint8_t kMinimumTouchSensitivityPercent = 3;
+constexpr uint8_t kMaximumTouchSensitivityPercent = 50;
+constexpr size_t kSerialCommandBufferSize = 48;
 
 constexpr char kWifiNamespace[] = "radio";
+constexpr char kSerialLogNamespace[] = "seriallog";
+constexpr char kSerialLogMaskKey[] = "mask";
 // Legacy single-network keys are retained for one-time migration.
 constexpr char kWifiSsidKey[] = "wifi_ssid";
 constexpr char kWifiPasswordKey[] = "wifi_pass";
@@ -126,6 +142,40 @@ struct WifiNetwork {
 WebServer server(80);
 DNSServer dnsServer;
 Preferences preferences;
+constexpr uint8_t kSerialLogSystemBit = 1U << 0;
+constexpr uint8_t kSerialLogWifiBit = 1U << 1;
+constexpr uint8_t kSerialLogAudioBit = 1U << 2;
+constexpr uint8_t kSerialLogTouchBit = 1U << 3;
+constexpr uint8_t kSerialLogAllBits = kSerialLogSystemBit | kSerialLogWifiBit |
+                                      kSerialLogAudioBit | kSerialLogTouchBit;
+uint8_t serialLogMask = kSerialLogSystemBit;
+bool touchDebugEnabled = false;
+
+bool serialLogEnabled(uint8_t category) {
+  return (serialLogMask & category) != 0;
+}
+
+void serialLogPrintln(uint8_t category, const char *message) {
+  if (serialLogEnabled(category)) Serial.println(message);
+}
+
+void serialLogPrintf(uint8_t category, const char *format, ...) {
+  if (!serialLogEnabled(category)) return;
+  va_list arguments;
+  va_start(arguments, format);
+  Serial.vprintf(format, arguments);
+  va_end(arguments);
+}
+
+bool serialLogKindEnabled(const char *kind) {
+  if (strcmp(kind, "wifi") == 0) return serialLogEnabled(kSerialLogWifiBit);
+  if (strcmp(kind, "audio") == 0 || strcmp(kind, "player") == 0 ||
+      strcmp(kind, "recovery") == 0) {
+    return serialLogEnabled(kSerialLogAudioBit);
+  }
+  if (strcmp(kind, "touch") == 0) return serialLogEnabled(kSerialLogTouchBit);
+  return serialLogEnabled(kSerialLogSystemBit);
+}
 Station *stations = nullptr;
 uint8_t stationCount = 0;
 uint8_t selectedStation = 0;
@@ -210,13 +260,15 @@ static_assert(sizeof(Station) == config::kStationNameSize +
 bool allocateStationStore() {
   if (stations != nullptr) return true;
   if (!psramFound() && !psramInit()) {
-    Serial.println("ERROR: PSRAM is required for the station store.");
+    serialLogPrintln(kSerialLogSystemBit,
+                     "ERROR: PSRAM is required for the station store.");
     return false;
   }
   stations = static_cast<Station *>(
       ps_calloc(config::kMaxStations, sizeof(Station)));
   if (stations == nullptr) {
-    Serial.println("ERROR: Could not allocate the station store in PSRAM.");
+    serialLogPrintln(kSerialLogSystemBit,
+                     "ERROR: Could not allocate the station store in PSRAM.");
     return false;
   }
   return true;
@@ -336,9 +388,10 @@ bool loadPlaylistFromFiles() {
 }
 
 void logPlaylistFileWriteFailure(const char *path, const char *stage) {
-  Serial.printf("WARN: Playlist snapshot %s %s (LittleFS %u/%u bytes).\n",
-                path, stage, static_cast<unsigned>(LittleFS.usedBytes()),
-                static_cast<unsigned>(LittleFS.totalBytes()));
+  serialLogPrintf(kSerialLogSystemBit,
+                  "WARN: Playlist snapshot %s %s (LittleFS %u/%u bytes).\n",
+                  path, stage, static_cast<unsigned>(LittleFS.usedBytes()),
+                  static_cast<unsigned>(LittleFS.totalBytes()));
 }
 
 bool writePlaylistFile(const char *path, uint32_t sequence) {
@@ -368,7 +421,7 @@ bool writePlaylistFile(const char *path, uint32_t sequence) {
       continue;
     }
     file.close();
-    Serial.printf(
+    serialLogPrintf(kSerialLogSystemBit,
         "WARN: Playlist snapshot %s data write failed at record %u "
         "(LittleFS %u/%u bytes).\n",
         path, static_cast<unsigned>(index),
@@ -513,14 +566,16 @@ bool persistPlaylist(bool preserveLoadedLegacy = false) {
     }
     if (saved) {
       if (!retireLegacyPlaylist()) {
-        Serial.println("WARN: Legacy playlist has been kept as a recovery copy.");
+        serialLogPrintln(kSerialLogSystemBit,
+                         "WARN: Legacy playlist has been kept as a recovery copy.");
       } else if (!persistPlaylistState()) {
-        Serial.println("WARN: Could not persist playlist selection state.");
+        serialLogPrintln(kSerialLogSystemBit,
+                         "WARN: Could not persist playlist selection state.");
       }
     }
     if (!saved) {
       playlistFileStoreUnavailable = true;
-      Serial.println(
+      serialLogPrintln(kSerialLogSystemBit,
           "WARN: LittleFS playlist snapshots are unavailable; subsequent "
           "playlist changes will use legacy NVS storage.");
     }
@@ -528,7 +583,8 @@ bool persistPlaylist(bool preserveLoadedLegacy = false) {
   if (!saved) {
     if (preserveLoadedLegacy) {
       if (!markLegacyPlaylistStorePreferred()) {
-        Serial.println("WARN: Could not mark the legacy playlist as preferred.");
+        serialLogPrintln(kSerialLogSystemBit,
+                         "WARN: Could not mark the legacy playlist as preferred.");
       }
       return false;
     }
@@ -578,13 +634,13 @@ void loadPlaylist() {
   if (loadLegacyPlaylist()) {
     if (preferLegacy) {
       playlistFileStoreUnavailable = true;
-      Serial.println(
+      serialLogPrintln(kSerialLogSystemBit,
           "WARN: Using the preserved legacy NVS playlist after a prior "
           "LittleFS write failure.");
       return;
     }
     if (!persistPlaylist(true)) {
-      Serial.println(
+      serialLogPrintln(kSerialLogSystemBit,
           "WARN: LittleFS playlist storage unavailable; legacy NVS playlist "
           "retained.");
     }
@@ -592,13 +648,15 @@ void loadPlaylist() {
   }
 
   if (preferLegacy && loadPlaylistFromFiles()) {
-    Serial.println("WARN: Legacy NVS playlist unavailable; recovered from LittleFS.");
+    serialLogPrintln(kSerialLogSystemBit,
+                     "WARN: Legacy NVS playlist unavailable; recovered from LittleFS.");
     return;
   }
 
   setDefaultPlaylist();
   if (!persistPlaylist()) {
-    Serial.println("ERROR: Could not persist the playlist.");
+    serialLogPrintln(kSerialLogSystemBit,
+                     "ERROR: Could not persist the playlist.");
   }
 }
 
@@ -625,13 +683,14 @@ void startAccessPoint() {
   WiFi.mode(stationConfigured ? WIFI_AP_STA : WIFI_AP);
   if (!WiFi.softAP(accessPointSsid, config::kAccessPointPassword,
                    config::kAccessPointChannel, false, 4)) {
-    Serial.println("ERROR: Wi-Fi access point failed to start.");
+    serialLogPrintln(kSerialLogWifiBit,
+                     "ERROR: Wi-Fi access point failed to start.");
     return;
   }
   dnsServer.start(53, "*", WiFi.softAPIP());
   accessPointRunning = true;
-  Serial.printf("Setup AP: %s / http://%s\n", accessPointSsid,
-                WiFi.softAPIP().toString().c_str());
+  serialLogPrintf(kSerialLogWifiBit, "Setup AP: %s / http://%s\n",
+                  accessPointSsid, WiFi.softAPIP().toString().c_str());
 }
 
 void startMdns() {
@@ -712,7 +771,8 @@ bool loadSavedWifiNetworks() {
             config::kWifiPasswordSize);
     savedWifiNetworkCount = 1;
     if (!persistSavedWifiNetworks()) {
-      Serial.println("WARN: Could not migrate legacy Wi-Fi configuration.");
+      serialLogPrintln(kSerialLogWifiBit,
+                       "WARN: Could not migrate legacy Wi-Fi configuration.");
     }
   }
   return true;
@@ -731,7 +791,8 @@ String savedWifiNetworksJson() {
 }
 
 bool connectWifiNetwork(uint8_t index) {
-  Serial.printf("Wi-Fi: trying saved network %s\n", savedWifiNetworks[index].ssid);
+  serialLogPrintf(kSerialLogWifiBit, "Wi-Fi: trying saved network %s\n",
+                  savedWifiNetworks[index].ssid);
   WiFi.begin(savedWifiNetworks[index].ssid, savedWifiNetworks[index].password);
   const uint32_t startedAt = millis();
   while (WiFi.status() != WL_CONNECTED &&
@@ -742,7 +803,8 @@ bool connectWifiNetwork(uint8_t index) {
     WiFi.disconnect(false, false);
     return false;
   }
-  Serial.printf("Wi-Fi: connected to %s\n", savedWifiNetworks[index].ssid);
+  serialLogPrintf(kSerialLogWifiBit, "Wi-Fi: connected to %s\n",
+                  savedWifiNetworks[index].ssid);
   WiFi.setAutoReconnect(true);
   startMdns();
   return true;
@@ -750,7 +812,8 @@ bool connectWifiNetwork(uint8_t index) {
 
 bool connectSavedStation() {
   if (!loadSavedWifiNetworks()) {
-    Serial.println("ERROR: Could not read saved Wi-Fi credentials.");
+    serialLogPrintln(kSerialLogWifiBit,
+                     "ERROR: Could not read saved Wi-Fi credentials.");
     return false;
   }
   wifiCredentialsPresent = savedWifiNetworkCount > 0;
@@ -814,13 +877,15 @@ void handleWifiScan() {
     WiFi.scanDelete();
     const int result = WiFi.scanNetworks(true, true);
     if (result == WIFI_SCAN_FAILED) {
-      Serial.printf("ERROR: Wi-Fi scan could not start (mode=%d, status=%d).\n",
-                    static_cast<int>(WiFi.getMode()), static_cast<int>(WiFi.status()));
+      serialLogPrintf(kSerialLogWifiBit,
+                      "ERROR: Wi-Fi scan could not start (mode=%d, status=%d).\n",
+                      static_cast<int>(WiFi.getMode()),
+                      static_cast<int>(WiFi.status()));
       sendJson("{\"error\":\"Wi-Fi scan could not start\"}", 503);
       return;
     }
     wifiScanInProgress = true;
-    Serial.println("Wi-Fi scan started.");
+    serialLogPrintln(kSerialLogWifiBit, "Wi-Fi scan started.");
     sendJson("{\"scanning\":true}", 202);
     return;
   }
@@ -831,13 +896,16 @@ void handleWifiScan() {
   }
   wifiScanInProgress = false;
   if (count < 0) {
-    Serial.printf("ERROR: Wi-Fi scan failed (result=%d, mode=%d, status=%d).\n",
-                  count, static_cast<int>(WiFi.getMode()), static_cast<int>(WiFi.status()));
+    serialLogPrintf(kSerialLogWifiBit,
+                    "ERROR: Wi-Fi scan failed (result=%d, mode=%d, status=%d).\n",
+                    count, static_cast<int>(WiFi.getMode()),
+                    static_cast<int>(WiFi.status()));
     WiFi.scanDelete();
     sendJson("{\"error\":\"Wi-Fi scan failed\"}", 500);
     return;
   }
-  Serial.printf("Wi-Fi scan completed: %d network(s).\n", count);
+  serialLogPrintf(kSerialLogWifiBit,
+                  "Wi-Fi scan completed: %d network(s).\n", count);
   String json = "{\"networks\":[";
   json.reserve(32 + static_cast<size_t>(count) * 64U);
   for (int index = 0; index < count; ++index) {
@@ -1089,7 +1157,8 @@ void setPlayerMessage(const char *message) {
 void audioInfo(Audio::msg_t message) {
   if (message.msg != nullptr) setPlayerMessage(message.msg);
   if (message.s != nullptr && message.msg != nullptr) {
-    Serial.printf("audio %s: %s\n", message.s, message.msg);
+    serialLogPrintf(kSerialLogAudioBit, "audio %s: %s\n", message.s,
+                    message.msg);
   }
 }
 
@@ -1723,7 +1792,9 @@ void addLog(const char *kind, const char *message) {
            static_cast<unsigned long>(millis() / 1000U), kind, message ? message : "");
   logHead = (logHead + 1) % kLogCapacity;
   if (logCount < kLogCapacity) ++logCount;
-  Serial.println(logs[(logHead + kLogCapacity - 1) % kLogCapacity]);
+  if (serialLogKindEnabled(kind)) {
+    Serial.println(logs[(logHead + kLogCapacity - 1) % kLogCapacity]);
+  }
 }
 
 void audioInfoV8(Audio::msg_t message) {
@@ -1751,7 +1822,8 @@ void audioInfoV8(Audio::msg_t message) {
     }
   }
   if (message.s != nullptr && message.msg != nullptr) {
-    Serial.printf("audio %s: %s\n", message.s, message.msg);
+    serialLogPrintf(kSerialLogAudioBit, "audio %s: %s\n", message.s,
+                    message.msg);
   }
 }
 
@@ -1800,6 +1872,59 @@ void loadSecurity() {
   const String stored = playerPreferences.getString(kAdminPasswordKey, "");
   playerPreferences.end();
   strlcpy(adminPassword, stored.c_str(), sizeof(adminPassword));
+}
+
+void loadSerialLogSettings() {
+  Preferences logPreferences;
+  if (!logPreferences.begin(config::kSerialLogNamespace, true)) return;
+  serialLogMask = logPreferences.getUChar(config::kSerialLogMaskKey,
+                                           kSerialLogSystemBit) &
+                  kSerialLogAllBits;
+  logPreferences.end();
+  touchDebugEnabled = serialLogEnabled(kSerialLogTouchBit);
+}
+
+String serialLogSettingsJson() {
+  return "{\"system\":" +
+         String(serialLogEnabled(kSerialLogSystemBit) ? "true" : "false") +
+         ",\"wifi\":" +
+         String(serialLogEnabled(kSerialLogWifiBit) ? "true" : "false") +
+         ",\"audio\":" +
+         String(serialLogEnabled(kSerialLogAudioBit) ? "true" : "false") +
+         ",\"touch\":" +
+         String(serialLogEnabled(kSerialLogTouchBit) ? "true" : "false") +
+         "}";
+}
+
+bool serialLogArgumentEnabled(const char *name) {
+  if (!server.hasArg(name)) return false;
+  const String value = server.arg(name);
+  return value == "true" || value == "1" || value == "on";
+}
+
+void handleSaveSerialLogSettings() {
+  if (!requireAdmin()) return;
+  uint8_t nextMask = 0;
+  if (serialLogArgumentEnabled("system")) nextMask |= kSerialLogSystemBit;
+  if (serialLogArgumentEnabled("wifi")) nextMask |= kSerialLogWifiBit;
+  if (serialLogArgumentEnabled("audio")) nextMask |= kSerialLogAudioBit;
+  if (serialLogArgumentEnabled("touch")) nextMask |= kSerialLogTouchBit;
+
+  Preferences logPreferences;
+  if (!logPreferences.begin(config::kSerialLogNamespace, false)) {
+    sendJson("{\"error\":\"could not open serial log settings\"}", 500);
+    return;
+  }
+  const bool saved =
+      logPreferences.putUChar(config::kSerialLogMaskKey, nextMask) == 1;
+  logPreferences.end();
+  if (!saved) {
+    sendJson("{\"error\":\"could not save serial log settings\"}", 500);
+    return;
+  }
+  serialLogMask = nextMask;
+  touchDebugEnabled = serialLogEnabled(kSerialLogTouchBit);
+  sendJson(serialLogSettingsJson());
 }
 
 bool isHexColor(const String &value) {
@@ -1946,7 +2071,8 @@ void startNextWifiRecoveryCandidate() {
     return;
   }
   const int candidate = wifiRecoveryCandidates[wifiRecoveryCandidateIndex];
-  Serial.printf("Wi-Fi recovery: trying %s\n", savedWifiNetworks[candidate].ssid);
+  serialLogPrintf(kSerialLogWifiBit, "Wi-Fi recovery: trying %s\n",
+                  savedWifiNetworks[candidate].ssid);
   WiFi.disconnect(false, false);
   WiFi.begin(savedWifiNetworks[candidate].ssid, savedWifiNetworks[candidate].password);
   wifiRecoveryAttemptStartedAt = millis();
@@ -2299,6 +2425,262 @@ bool selectStationForUser(uint8_t id, const char *reason) {
   return true;
 }
 
+struct TouchButton {
+  uint8_t pin;
+  uint32_t baseline = 0;
+  uint32_t lastValue = 0;
+  uint8_t consecutiveSamples = 0;
+  bool pressed = false;
+  bool ready = false;
+};
+
+TouchButton previousTouch{config::kPreviousTouchPin};
+TouchButton nextTouch{config::kNextTouchPin};
+uint32_t lastTouchScanAt = 0;
+uint32_t lastTouchDebugAt = 0;
+uint8_t touchSensitivityPercent = config::kDefaultTouchSensitivityPercent;
+bool touchCalibrationInProgress = false;
+uint8_t touchCalibrationSampleCount = 0;
+uint64_t previousTouchCalibrationTotal = 0;
+uint64_t nextTouchCalibrationTotal = 0;
+char serialCommandBuffer[config::kSerialCommandBufferSize] = {};
+size_t serialCommandLength = 0;
+
+uint32_t touchPressThreshold(const TouchButton &button) {
+  const uint32_t margin = max<uint32_t>(
+      button.baseline * touchSensitivityPercent / 100U, 300U);
+  return button.baseline + margin;
+}
+
+uint32_t touchReleaseThreshold(const TouchButton &button) {
+  const uint8_t releasePercent = max<uint8_t>(touchSensitivityPercent / 2U, 1U);
+  const uint32_t margin =
+      max<uint32_t>(button.baseline * releasePercent / 100U, 150U);
+  return button.baseline + margin;
+}
+
+void printTouchButtonStatus(const char *name, const TouchButton &button) {
+  Serial.printf(
+      "TOUCH %-8s gpio=%u raw=%lu baseline=%lu press=%lu release=%lu "
+      "state=%s ready=%s\n",
+      name, button.pin, static_cast<unsigned long>(button.lastValue),
+      static_cast<unsigned long>(button.baseline),
+      static_cast<unsigned long>(touchPressThreshold(button)),
+      static_cast<unsigned long>(touchReleaseThreshold(button)),
+      button.pressed ? "pressed" : "released",
+      button.ready ? "yes" : "no");
+}
+
+void printTouchStatus() {
+  Serial.printf("TOUCH sensitivity=%u%% (lower value is more sensitive)\n",
+                touchSensitivityPercent);
+  if (touchCalibrationInProgress) {
+    Serial.printf("TOUCH calibration %u/%u\n", touchCalibrationSampleCount,
+                  config::kTouchCalibrationSamples);
+  }
+  printTouchButtonStatus("previous", previousTouch);
+  printTouchButtonStatus("next", nextTouch);
+}
+
+void calibrateTouchButton(TouchButton &button) {
+  uint64_t total = 0;
+  for (uint8_t sample = 0; sample < config::kTouchCalibrationSamples;
+       ++sample) {
+    total += touchRead(button.pin);
+    delay(5);
+  }
+  button.baseline = static_cast<uint32_t>(
+      total / config::kTouchCalibrationSamples);
+  button.lastValue = button.baseline;
+  button.ready = button.baseline > 0;
+  serialLogPrintf(kSerialLogTouchBit, "Touch GPIO%u baseline: %lu (%s)\n",
+                  button.pin, static_cast<unsigned long>(button.baseline),
+                  button.ready ? "ready" : "unavailable");
+}
+
+void initialiseTouchButtons() {
+  // Keep both electrodes untouched during this short startup calibration.
+  calibrateTouchButton(previousTouch);
+  calibrateTouchButton(nextTouch);
+}
+
+void beginTouchCalibration() {
+  touchCalibrationInProgress = true;
+  touchCalibrationSampleCount = 0;
+  previousTouchCalibrationTotal = 0;
+  nextTouchCalibrationTotal = 0;
+  previousTouch.ready = false;
+  nextTouch.ready = false;
+  previousTouch.pressed = false;
+  nextTouch.pressed = false;
+  previousTouch.consecutiveSamples = 0;
+  nextTouch.consecutiveSamples = 0;
+  Serial.println("TOUCH calibration started; release both electrodes");
+}
+
+void sampleTouchCalibration() {
+  previousTouch.lastValue = touchRead(previousTouch.pin);
+  nextTouch.lastValue = touchRead(nextTouch.pin);
+  previousTouchCalibrationTotal += previousTouch.lastValue;
+  nextTouchCalibrationTotal += nextTouch.lastValue;
+  ++touchCalibrationSampleCount;
+  if (touchCalibrationSampleCount < config::kTouchCalibrationSamples) return;
+
+  previousTouch.baseline = static_cast<uint32_t>(
+      previousTouchCalibrationTotal / config::kTouchCalibrationSamples);
+  nextTouch.baseline = static_cast<uint32_t>(
+      nextTouchCalibrationTotal / config::kTouchCalibrationSamples);
+  previousTouch.lastValue = previousTouch.baseline;
+  nextTouch.lastValue = nextTouch.baseline;
+  previousTouch.ready = previousTouch.baseline > 0;
+  nextTouch.ready = nextTouch.baseline > 0;
+  touchCalibrationInProgress = false;
+  Serial.println("TOUCH calibration complete");
+  printTouchStatus();
+}
+
+bool updateTouchButton(TouchButton &button) {
+  if (!button.ready) return false;
+
+  const uint32_t value = touchRead(button.pin);
+  button.lastValue = value;
+  const uint32_t pressThreshold = touchPressThreshold(button);
+  const uint32_t releaseThreshold = touchReleaseThreshold(button);
+
+  if (!button.pressed) {
+    // Follow slow temperature and humidity drift, but never learn a touch as
+    // the new idle baseline.
+    if (value < button.baseline + button.baseline / 10U) {
+      button.baseline = static_cast<uint32_t>(
+          (static_cast<uint64_t>(button.baseline) * 63U + value) / 64U);
+    }
+    if (value >= pressThreshold) {
+      if (++button.consecutiveSamples >= config::kTouchDebounceSamples) {
+        button.consecutiveSamples = 0;
+        button.pressed = true;
+        return true;
+      }
+    } else {
+      button.consecutiveSamples = 0;
+    }
+  } else if (value <= releaseThreshold) {
+    if (++button.consecutiveSamples >= config::kTouchDebounceSamples) {
+      button.consecutiveSamples = 0;
+      button.pressed = false;
+    }
+  } else {
+    button.consecutiveSamples = 0;
+  }
+  return false;
+}
+
+void pollTouchButtons() {
+  const uint32_t now = millis();
+  if (now - lastTouchScanAt < config::kTouchScanIntervalMs) return;
+  lastTouchScanAt = now;
+
+  if (touchCalibrationInProgress) {
+    sampleTouchCalibration();
+    return;
+  }
+
+  const bool previousPressed = updateTouchButton(previousTouch);
+  const bool nextPressed = updateTouchButton(nextTouch);
+  // Ignore a simultaneous two-pad press instead of making two station changes.
+  if (previousPressed == nextPressed || stationCount == 0) return;
+
+  const uint8_t target = previousPressed
+      ? (selectedStation == 0 ? stationCount - 1 : selectedStation - 1)
+      : (selectedStation + 1) % stationCount;
+  const char *reason = previousPressed ? "previous station from touch"
+                                       : "next station from touch";
+  if (touchDebugEnabled) {
+    Serial.printf("TOUCH event=%s station=%u raw=%lu\n",
+                  previousPressed ? "previous" : "next", target,
+                  static_cast<unsigned long>(previousPressed
+                                                 ? previousTouch.lastValue
+                                                 : nextTouch.lastValue));
+  }
+  if (!selectStationForUser(target, reason)) {
+    addLog("touch", "could not save selected station");
+    return;
+  }
+  addLog("touch", previousPressed ? "previous station" : "next station");
+}
+
+void handleSerialCommand(const char *command) {
+  if (strcmp(command, "help") == 0) {
+    Serial.println(
+        "Commands: touch | touch on | touch off | touch calibrate | "
+        "touch sensitivity <3..50>");
+  } else if (strcmp(command, "touch") == 0 ||
+             strcmp(command, "touch status") == 0) {
+    printTouchStatus();
+  } else if (strcmp(command, "touch on") == 0) {
+    touchDebugEnabled = true;
+    lastTouchDebugAt = millis();
+    Serial.println("TOUCH continuous debug enabled (500 ms)");
+    printTouchStatus();
+  } else if (strcmp(command, "touch off") == 0) {
+    touchDebugEnabled = false;
+    Serial.println("TOUCH continuous debug disabled");
+  } else if (strcmp(command, "touch calibrate") == 0) {
+    beginTouchCalibration();
+  } else if (strncmp(command, "touch sensitivity ", 18) == 0) {
+    const char *valueText = command + 18;
+    uint16_t value = 0;
+    bool valid = valueText[0] != '\0';
+    for (size_t index = 0; valid && valueText[index] != '\0'; ++index) {
+      const char character = valueText[index];
+      if (character < '0' || character > '9') {
+        valid = false;
+      } else {
+        value = value * 10U + static_cast<uint8_t>(character - '0');
+        if (value > config::kMaximumTouchSensitivityPercent) valid = false;
+      }
+    }
+    if (!valid || value < config::kMinimumTouchSensitivityPercent) {
+      Serial.println("TOUCH sensitivity must be 3..50 percent");
+    } else {
+      touchSensitivityPercent = static_cast<uint8_t>(value);
+      Serial.printf("TOUCH sensitivity set to %u%%\n",
+                    touchSensitivityPercent);
+      printTouchStatus();
+    }
+  } else {
+    Serial.printf("Unknown command: %s (type 'help')\n", command);
+  }
+}
+
+void pollSerialCommands() {
+  while (Serial.available() > 0) {
+    char character = static_cast<char>(Serial.read());
+    if (character == '\r' || character == '\n') {
+      if (serialCommandLength == 0) continue;
+      serialCommandBuffer[serialCommandLength] = '\0';
+      handleSerialCommand(serialCommandBuffer);
+      serialCommandLength = 0;
+      continue;
+    }
+    if (character >= 'A' && character <= 'Z') character += 'a' - 'A';
+    if (character < 0x20 || character > 0x7e) continue;
+    if (serialCommandLength + 1 < config::kSerialCommandBufferSize) {
+      serialCommandBuffer[serialCommandLength++] = character;
+    } else {
+      serialCommandLength = 0;
+      Serial.println("Serial command is too long");
+    }
+  }
+}
+
+void printTouchDebugIfDue() {
+  if (!touchDebugEnabled) return;
+  const uint32_t now = millis();
+  if (now - lastTouchDebugAt < config::kTouchDebugIntervalMs) return;
+  lastTouchDebugAt = now;
+  printTouchStatus();
+}
+
 void handleUserSelectStation() {
   uint8_t id;
   if (!parseStationId(id)) {
@@ -2484,7 +2866,8 @@ void handleSetPassword() {
 void handleFactoryReset() {
   if (!requireAdmin()) return;
   const char *namespaces[] = {config::kWifiNamespace, config::kPlaylistNamespace,
-                              "player", "catalog", kSecurityNamespace, kUiNamespace};
+                              "player", "catalog", kSecurityNamespace,
+                              kUiNamespace, config::kSerialLogNamespace};
   bool ok = true;
   for (const char *name : namespaces) { preferences.begin(name, false); ok = preferences.clear() && ok; preferences.end(); }
   if (playlistStorageReady) {
@@ -2648,7 +3031,7 @@ document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh()}
 )HTML";
 
 constexpr char kAdminHtmlV302[] PROGMEM =
-R"HTML(<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>网络收音机 4.4.4 管理</title><style>
+R"HTML(<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>网络收音机 4.5.0 管理</title><style>
 :root{color-scheme:dark}body{max-width:880px;margin:24px auto;padding:0 16px;background:#101827;color:#e5e7eb;font:16px system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif}section,pre,.station,.wifi-network{background:#172234;padding:14px;border-radius:10px;margin:14px 0}button,input,select{box-sizing:border-box;padding:9px;margin:4px;border:0;border-radius:6px}input,select{width:100%}button{background:#38bdf8;color:#062032;font-weight:700;cursor:pointer}.warn{background:#fbbf24}.danger{background:#fb7185}.station img,.station .fallback{display:inline-grid;width:48px;height:48px;object-fit:contain;object-position:center;background:#fff;border-radius:8px;vertical-align:middle;margin-right:10px}.station .fallback{place-items:center;background:#e89c27;color:#fff;font-weight:700}.station small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#b7c6da}.actions{display:block}.station button{min-width:82px;padding:11px 17px}.wifi-network{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px}.wifi-network b{overflow:hidden;text-overflow:ellipsis}.wifi-network button{width:auto;margin:0}.active{outline:2px solid #38bdf8}.state{font-size:1.1em;color:#67e8f9;margin-bottom:24px}.transport{display:flex;align-items:center;justify-content:center;gap:clamp(28px,8vw,72px);margin:18px 0 28px}.transport button{display:grid;place-items:center;margin:0}.skip{width:76px;height:64px;border-radius:18px;font-size:25px;background:#263449;color:#dce6f5}.play{width:92px;height:92px;border-radius:50%;font-size:36px;background:#f8fafc;color:#172234;box-shadow:0 10px 28px #0005}.volume-head{display:flex;justify-content:space-between;align-items:center;margin:0 6px 8px;color:#cbd5e1}.volume-head b{color:#fff;font-size:1.15em}.volume{width:calc(100% - 10px);accent-color:#38bdf8}.theme-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.theme-grid label{display:grid;gap:6px}.theme-grid input,.theme-grid select{margin:0}.theme-grid input[type=color]{height:54px;padding:4px;border:1px solid #ffffff26;border-radius:10px;background:#fff;color-scheme:light;cursor:pointer}.theme-grid input[type=color]::-webkit-color-swatch-wrapper{padding:0}.theme-grid input[type=color]::-webkit-color-swatch{border:0;border-radius:6px}.theme-grid input[type=color]::-moz-color-swatch{border:0;border-radius:6px}pre{overflow:auto;white-space:pre-wrap}a{color:#67e8f9}@media(max-width:560px){.theme-grid{grid-template-columns:1fr}.station{overflow-x:auto;white-space:nowrap}.station small{white-space:normal}.station button{min-width:auto;padding:9px 11px;margin:3px 2px}}</style></head>
 <body><h1>ESP32-S3 网络收音机</h1><p>版本号：)HTML"
 NETWORK_RADIO_VERSION
@@ -2659,6 +3042,7 @@ R"HTML(　<a href="/">返回播放器</a></p>
 <section><h2>用户页面外观</h2><div class="theme-grid"><label>页面颜色<input id="background" type="color" value="#656b6a"></label><label>强调颜色<input id="accent" type="color" value="#f2a51a"></label><label>纹理效果<select id="texture"><option value="none">无纹理</option><option value="dots">圆点</option><option value="grid">网格</option><option value="diagonal">斜纹</option><option value="cloud">祥云</option><option value="lattice">回纹窗格</option><option value="waves">水波</option><option value="bamboo">竹影</option><option value="ricepaper">宣纸</option><option value="porcelain">青花</option></select></label></div><button id="saveTheme">保存页面外观</button></section>
 <section><h2>播放列表</h2><div id="stations">加载中…</div><h3 id="formTitle">新增电台</h3><input id="editId" type="hidden"><input id="stationName" placeholder="电台名称"><input id="stationUrl" placeholder="http(s):// 音频流地址"><button id="saveStation">保存</button><button id="cancelEdit" class="warn">取消编辑</button></section>
 <section><h2>Wi-Fi</h2><p>最多保存 5 个网络；启动时会选择信号最强且可连接的已保存网络。</p><div id="savedWifi">读取已保存网络…</div><button id="scanWifi">扫描网络</button><select id="ssid"><option value="">选择 Wi-Fi</option></select><input id="wifiPassword" type="password" placeholder="Wi-Fi 密码（更新同名网络时请重新填写）"><button id="saveWifi">保存网络并重启连接</button><button id="forgetWifi" class="warn">清除全部 Wi-Fi 设置</button></section>
+<section><h2>串口日志</h2><p>开关会立即生效并保存；关闭只停止串口输出，诊断日志仍会保留。</p><div id="serialLogs" style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px"><label style="display:flex;align-items:center;gap:8px"><input id="logSystem" type="checkbox" style="width:auto">系统 / 存储</label><label style="display:flex;align-items:center;gap:8px"><input id="logWifi" type="checkbox" style="width:auto">Wi-Fi</label><label style="display:flex;align-items:center;gap:8px"><input id="logAudio" type="checkbox" style="width:auto">音频 / 播放恢复</label><label style="display:flex;align-items:center;gap:8px"><input id="logTouch" type="checkbox" style="width:auto">触摸按键</label></div><small id="serialLogState">正在读取…</small></section>
 <section><h2>维护与安全</h2><button id="chooseFirmware">选择固件并升级</button><input id="firmware" type="file" accept=".bin" hidden><button id="chooseResources" class="warn">选择资源镜像并升级</button><input id="resources" type="file" accept=".bin" hidden><p><small>资源升级请选择构建目录中的 <code>littlefs.bin</code>。它会更新台标、开机提示音等 LittleFS 文件，不会清除 Wi-Fi、电台或管理密码。</small></p><button id="downloadLog">下载诊断日志</button><input id="adminPassword" type="password" placeholder="设置管理密码（8–63 位，用户名 admin）"><button id="savePassword">保存管理密码</button><button id="factoryReset" class="danger">恢复出厂设置</button><p>配网热点密码独立：<code>radio-setup</code></p></section><pre id="status">读取中…</pre>
 <script>
 const q=s=>document.querySelector(s),enc=o=>new URLSearchParams(o);let stations=[],selected=-1,playerState='stopped',playlistRevision=0,pollBusy=false,volumeTimer,pollCount=0;
@@ -2684,10 +3068,13 @@ async function loadSavedWifi(){try{renderSavedWifi(await api('/api/wifi'))}catch
 async function saveWifi(){try{await api('/api/wifi',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:enc({ssid:q('#ssid').value,password:q('#wifiPassword').value})});q('#status').textContent='Wi-Fi 已保存，设备正在重启并选择可用网络…'}catch(e){alert(e.message)}}
 async function deleteWifi(ssid){if(!confirm('删除已保存的 Wi-Fi “'+ssid+'”？'))return;try{await api('/api/wifi/delete?ssid='+encodeURIComponent(ssid),{method:'POST'});q('#status').textContent='Wi-Fi 已删除，设备正在重启…'}catch(e){alert(e.message)}}
 async function saveTheme(){try{const data=await api('/api/ui-theme',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:enc({background:q('#background').value,accent:q('#accent').value,texture:q('#texture').value})});q('#background').value=data.background;q('#accent').value=data.accent;q('#texture').value=data.texture;alert('页面外观已保存')}catch(e){alert(e.message)}}
+function applySerialLogs(data){q('#logSystem').checked=!!data.system;q('#logWifi').checked=!!data.wifi;q('#logAudio').checked=!!data.audio;q('#logTouch').checked=!!data.touch;q('#serialLogState').textContent='已保存'}
+async function loadSerialLogs(){try{applySerialLogs(await api('/api/serial-logs'))}catch(e){q('#serialLogState').textContent='读取失败：'+e.message}}
+async function saveSerialLogs(){q('#serialLogState').textContent='正在保存…';try{const data=await api('/api/serial-logs',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:enc({system:q('#logSystem').checked,wifi:q('#logWifi').checked,audio:q('#logAudio').checked,touch:q('#logTouch').checked})});applySerialLogs(data)}catch(e){q('#serialLogState').textContent='保存失败：'+e.message;alert(e.message)}}
 async function savePassword(){try{await api('/api/security/password',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:enc({password:q('#adminPassword').value})});alert('管理密码已保存；请刷新页面并用 admin 登录。')}catch(e){alert(e.message)}}
 async function uploadFirmware(file){if(!file||!confirm('上传后设备会重启，继续？'))return;const form=new FormData;form.append('firmware',file);try{await api('/api/ota',{method:'POST',body:form});q('#status').textContent='升级完成，设备正在重启…'}catch(e){alert(e.message)}}
 async function uploadResources(file){if(!file||!confirm('资源将被替换，上传后设备会重启；Wi-Fi 与电台设置会保留。继续？'))return;const form=new FormData;form.append('resources',file);try{await api('/api/ota/resources',{method:'POST',body:form});q('#status').textContent='资源升级完成，设备正在重启…'}catch(e){alert(e.message)}}
-q('#previous').addEventListener('click',()=>post('/api/player/previous'));q('#play').addEventListener('click',()=>post(playerState==='playing'?'/api/player/stop':'/api/player/play'));q('#next').addEventListener('click',()=>post('/api/player/next'));q('#volume').addEventListener('input',e=>{q('#volumeText').textContent=e.target.value;clearTimeout(volumeTimer);volumeTimer=setTimeout(()=>post('/api/player/volume?value='+encodeURIComponent(e.target.value)),180)});q('#saveStation').addEventListener('click',saveStation);q('#cancelEdit').addEventListener('click',clearForm);q('#scanWifi').addEventListener('click',scanWifi);q('#saveWifi').addEventListener('click',saveWifi);q('#forgetWifi').addEventListener('click',()=>{if(confirm('清除全部已保存的 Wi-Fi？'))post('/api/wifi/forget')});q('#saveTheme').addEventListener('click',saveTheme);q('#savePassword').addEventListener('click',savePassword);q('#chooseFirmware').addEventListener('click',()=>q('#firmware').click());q('#firmware').addEventListener('change',e=>uploadFirmware(e.target.files[0]));q('#chooseResources').addEventListener('click',()=>q('#resources').click());q('#resources').addEventListener('change',e=>uploadResources(e.target.files[0]));q('#downloadLog').addEventListener('click',()=>location='/api/diagnostics/download');q('#factoryReset').addEventListener('click',()=>{if(confirm('这将清除 Wi-Fi、电台、音量、页面外观和管理密码，确定？'))post('/api/factory-reset')});document.addEventListener('visibilitychange',()=>{if(!document.hidden)poll()});Promise.all([loadPlaylist(),refreshPlayer(),refreshStatus(),loadSavedWifi(),api('/api/ui-theme').then(t=>{q('#background').value=t.background;q('#accent').value=t.accent;q('#texture').value=t.texture})]).then(poll).catch(e=>q('#status').textContent='错误：'+e.message);
+q('#previous').addEventListener('click',()=>post('/api/player/previous'));q('#play').addEventListener('click',()=>post(playerState==='playing'?'/api/player/stop':'/api/player/play'));q('#next').addEventListener('click',()=>post('/api/player/next'));q('#volume').addEventListener('input',e=>{q('#volumeText').textContent=e.target.value;clearTimeout(volumeTimer);volumeTimer=setTimeout(()=>post('/api/player/volume?value='+encodeURIComponent(e.target.value)),180)});q('#saveStation').addEventListener('click',saveStation);q('#cancelEdit').addEventListener('click',clearForm);q('#scanWifi').addEventListener('click',scanWifi);q('#saveWifi').addEventListener('click',saveWifi);q('#forgetWifi').addEventListener('click',()=>{if(confirm('清除全部已保存的 Wi-Fi？'))post('/api/wifi/forget')});q('#saveTheme').addEventListener('click',saveTheme);['#logSystem','#logWifi','#logAudio','#logTouch'].forEach(id=>q(id).addEventListener('change',saveSerialLogs));q('#savePassword').addEventListener('click',savePassword);q('#chooseFirmware').addEventListener('click',()=>q('#firmware').click());q('#firmware').addEventListener('change',e=>uploadFirmware(e.target.files[0]));q('#chooseResources').addEventListener('click',()=>q('#resources').click());q('#resources').addEventListener('change',e=>uploadResources(e.target.files[0]));q('#downloadLog').addEventListener('click',()=>location='/api/diagnostics/download');q('#factoryReset').addEventListener('click',()=>{if(confirm('这将清除 Wi-Fi、电台、音量、页面外观和管理密码，确定？'))post('/api/factory-reset')});document.addEventListener('visibilitychange',()=>{if(!document.hidden)poll()});Promise.all([loadPlaylist(),refreshPlayer(),refreshStatus(),loadSavedWifi(),loadSerialLogs(),api('/api/ui-theme').then(t=>{q('#background').value=t.background;q('#accent').value=t.accent;q('#texture').value=t.texture})]).then(poll).catch(e=>q('#status').textContent='错误：'+e.message);
 </script></body></html>
 )HTML";
 
@@ -2725,6 +3112,10 @@ void configureWebServerV8() {
   server.on("/api/diagnostics", HTTP_GET, handleDiagnostics);
   server.on("/api/diagnostics/download", HTTP_GET, handleDiagnosticsDownload);
   server.on("/api/security/password", HTTP_POST, handleSetPassword);
+  server.on("/api/serial-logs", HTTP_GET, [] {
+    if (requireAdmin()) sendJson(serialLogSettingsJson());
+  });
+  server.on("/api/serial-logs", HTTP_POST, handleSaveSerialLogSettings);
   server.on("/api/ui-theme", HTTP_GET, [] { if (requireAdmin()) sendJson(uiThemeJson()); });
   server.on("/api/ui-theme", HTTP_POST, handleSaveUiTheme);
   server.on("/api/factory-reset", HTTP_POST, handleFactoryReset);
@@ -2739,6 +3130,7 @@ void configureWebServerV8() {
 #ifndef NETWORK_RADIO_V8_NO_ENTRYPOINT
 void setup() {
   Serial.begin(config::kSerialBaud); delay(300);
+  loadSerialLogSettings();
   rgbLedWrite(kStatusLedPin, 0, 0, 0);
   snprintf(accessPointSsid, sizeof(accessPointSsid), "%s%04X", config::kAccessPointPrefix, setupAccessPointId());
   loadSecurity();
@@ -2748,7 +3140,10 @@ void setup() {
     while (true) delay(1000);
   }
   playlistStorageReady = LittleFS.begin(false);
-  Serial.printf("LittleFS: %s\n", playlistStorageReady ? "mounted" : "mount failed; using NVS fallback");
+  serialLogPrintf(kSerialLogSystemBit, "LittleFS: %s\n",
+                  playlistStorageReady
+                      ? "mounted"
+                      : "mount failed; using NVS fallback");
   loadPlaylist();
   migrateStationCatalog();
   importBuiltinStations();
@@ -2768,6 +3163,7 @@ void setup() {
   wasStationConnected = connected;
   onStationSelected = onPlaylistSelectionV8;
   configureWebServerV8();
+  initialiseTouchButtons();
   addLog("boot", config::kFirmwareVersion);
   if (connected) startSelectedStationV8("boot playback");
 }
@@ -2775,6 +3171,9 @@ void setup() {
 void loop() {
   if (accessPointRunning) dnsServer.processNextRequest();
   server.handleClient();
+  pollSerialCommands();
+  pollTouchButtons();
+  printTouchDebugIfDue();
   maintainNetworkAndPlayback();
   audio.loop();
   updateStatusLed();
