@@ -1,5 +1,5 @@
 /*
- * Network Radio 4.6.0 standalone Arduino sketch.
+ * Network Radio 4.7.5 standalone Arduino sketch.
  * Project-local source dependencies are inlined in this file.
  *
  * The superseded V4 test-tone/I2S path and unused legacy web pages have
@@ -9,8 +9,8 @@
 
 /* Network Radio 3.0: player UI, administration UI, and WS2812B status LED. */
 
-#define NETWORK_RADIO_VERSION "4.6.0"
-#define NETWORK_RADIO_MAX_STATIONS 140
+#define NETWORK_RADIO_VERSION "4.7.5"
+#define NETWORK_RADIO_MAX_STATIONS 512
 #ifdef NETWORK_RADIO_NO_ENTRYPOINT
 #define NETWORK_RADIO_V8_NO_ENTRYPOINT
 #endif
@@ -82,7 +82,7 @@ void audio_process_i2s(int32_t *outBuff, int16_t validSamples,
 
 namespace config {
 #ifndef NETWORK_RADIO_VERSION
-#define NETWORK_RADIO_VERSION "4.6.0"
+#define NETWORK_RADIO_VERSION "4.7.5"
 #endif
 constexpr char kFirmwareVersion[] = NETWORK_RADIO_VERSION;
 constexpr uint32_t kSerialBaud = 115200;
@@ -91,6 +91,7 @@ constexpr gpio_num_t kI2sLrclk = GPIO_NUM_5;
 constexpr gpio_num_t kI2sDataOut = GPIO_NUM_6;
 constexpr uint8_t kPreviousTouchPin = 1;  // ESP32-S3 Touch1
 constexpr uint8_t kNextTouchPin = 2;      // ESP32-S3 Touch2
+constexpr uint8_t kPlayPauseTouchPin = 3; // ESP32-S3 Touch3
 constexpr uint32_t kTouchScanIntervalMs = 25;
 constexpr uint32_t kTouchDebugIntervalMs = 500;
 constexpr uint8_t kTouchCalibrationSamples = 32;
@@ -113,13 +114,16 @@ constexpr size_t kWifiPasswordSize = 65;
 constexpr char kPlaylistNamespace[] = "playlist";
 constexpr char kPlaylistCountKey[] = "count";
 constexpr char kPlaylistSelectedKey[] = "selected";
+constexpr char kPlaylistSelected16Key[] = "selected16";
 constexpr char kPlaylistSequenceKey[] = "sequence";
 constexpr char kPlaylistBackendKey[] = "backend";
 constexpr uint8_t kPlaylistBackendLegacyNvs = 1;
 #ifndef NETWORK_RADIO_MAX_STATIONS
 #define NETWORK_RADIO_MAX_STATIONS 16
 #endif
-constexpr uint8_t kMaxStations = NETWORK_RADIO_MAX_STATIONS;
+constexpr uint16_t kMaxStations = NETWORK_RADIO_MAX_STATIONS;
+static_assert(NETWORK_RADIO_MAX_STATIONS <= UINT16_MAX,
+              "Station capacity must fit the persistent 16-bit index");
 constexpr size_t kStationNameSize = 49;
 constexpr size_t kStationUrlSize = 257;
 constexpr size_t kStationLogoSize = 41;
@@ -185,14 +189,27 @@ bool serialLogKindEnabled(const char *kind) {
   return serialLogEnabled(kSerialLogSystemBit);
 }
 Station *stations = nullptr;
-uint8_t stationCount = 0;
-uint8_t selectedStation = 0;
+uint16_t stationCount = 0;
+uint16_t selectedStation = 0;
 bool playlistStorageReady = false;
 bool playlistFileStoreUnavailable = false;
 bool legacyPlaylistMigrationPending = false;
+bool playlistFormatMigrationPending = false;
 uint8_t playlistActiveSlot = 0;
 uint32_t playlistSequence = 0;
 uint32_t playlistRevision = 1;
+
+constexpr uint8_t kOtherStationGroupId = 250;
+constexpr uint8_t kDefaultStationGroupOrder[] = {
+  0, 1, 2, 3, 4, 5, 6,
+  20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34,
+  35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48,
+  kOtherStationGroupId,
+};
+constexpr uint8_t kStationGroupCapacity = sizeof(kDefaultStationGroupOrder);
+uint8_t stationGroupOrder[kStationGroupCapacity] = {};
+uint8_t stationGroupOrderCount = 0;
+bool stationGroupOrderLoaded = false;
 
 char accessPointSsid[20] = {};
 bool accessPointRunning = false;
@@ -208,9 +225,14 @@ uint8_t wifiRecoveryCandidateCount = 0;
 uint8_t wifiRecoveryCandidateIndex = 0;
 uint32_t wifiRecoveryAttemptStartedAt = 0;
 bool mdnsRunning = false;
-void (*onStationSelected)(uint8_t) = nullptr;
+void (*onStationSelected)(uint16_t) = nullptr;
 
 bool requireAdmin();
+uint8_t stationRegionOrder(const char *name);
+const char *stationGroupName(const char *name);
+const char *stationGroupNameById(uint8_t id);
+bool regroupStationsInMemory();
+bool persistStationGroupOrder();
 
 uint16_t setupAccessPointId() {
   // Arduino represents ESP.getEfuseMac() little-endian; B8:1F:... -> 1FB8.
@@ -241,16 +263,16 @@ void sendJson(const String &body, int statusCode = 200) {
   server.send(statusCode, "application/json; charset=utf-8", body);
 }
 
-String stationKey(uint8_t index) {
+String stationKey(uint16_t index) {
   return "item_" + String(index);
 }
 
 constexpr char kPlaylistSlotA[] = "/playlist_a.bin";
 constexpr char kPlaylistSlotB[] = "/playlist_b.bin";
 constexpr uint32_t kPlaylistMagic = 0x3150524EU;  // "NRP1"
-constexpr uint16_t kPlaylistFormatVersion = 1;
+constexpr uint16_t kPlaylistFormatVersion = 2;
 
-struct PlaylistFileHeader {
+struct PlaylistFileHeaderV1 {
   uint32_t magic;
   uint16_t version;
   uint16_t count;
@@ -259,6 +281,19 @@ struct PlaylistFileHeader {
   uint32_t sequence;
   uint32_t checksum;
 };
+
+struct PlaylistFileHeader {
+  uint32_t magic;
+  uint16_t version;
+  uint16_t count;
+  uint16_t selected;
+  uint16_t reserved;
+  uint32_t sequence;
+  uint32_t checksum;
+};
+
+static_assert(sizeof(PlaylistFileHeaderV1) == sizeof(PlaylistFileHeader),
+              "Playlist header versions must retain their on-flash size");
 
 static_assert(sizeof(Station) == config::kStationNameSize +
                                   config::kStationUrlSize +
@@ -291,8 +326,16 @@ uint32_t playlistChecksumUpdate(uint32_t value, const void *data, size_t length)
   return value;
 }
 
-uint32_t playlistChecksum(uint16_t count, uint8_t selected,
+uint32_t playlistChecksum(uint16_t count, uint16_t selected,
                           const Station *entries) {
+  uint32_t value = 2166136261UL;
+  value = playlistChecksumUpdate(value, &count, sizeof(count));
+  value = playlistChecksumUpdate(value, &selected, sizeof(selected));
+  return playlistChecksumUpdate(value, entries, count * sizeof(Station));
+}
+
+uint32_t playlistChecksumV1(uint16_t count, uint8_t selected,
+                            const Station *entries) {
   uint32_t value = 2166136261UL;
   value = playlistChecksumUpdate(value, &count, sizeof(count));
   value = playlistChecksumUpdate(value, &selected, sizeof(selected));
@@ -314,7 +357,8 @@ bool inspectPlaylistFile(const char *path, PlaylistFileHeader &header) {
   const bool headerRead = file.read(reinterpret_cast<uint8_t *>(&header),
                                     sizeof(header)) == sizeof(header);
   if (!headerRead || header.magic != kPlaylistMagic ||
-      header.version != kPlaylistFormatVersion || header.count == 0 ||
+      (header.version != 1 && header.version != kPlaylistFormatVersion) ||
+      header.count == 0 ||
       header.count > config::kMaxStations || header.selected >= header.count ||
       file.size() != sizeof(header) + header.count * sizeof(Station)) {
     file.close();
@@ -323,8 +367,14 @@ bool inspectPlaylistFile(const char *path, PlaylistFileHeader &header) {
 
   uint32_t checksum = 2166136261UL;
   checksum = playlistChecksumUpdate(checksum, &header.count, sizeof(header.count));
-  checksum = playlistChecksumUpdate(checksum, &header.selected,
-                                    sizeof(header.selected));
+  if (header.version == 1) {
+    const uint8_t legacySelection = static_cast<uint8_t>(header.selected);
+    checksum = playlistChecksumUpdate(checksum, &legacySelection,
+                                      sizeof(legacySelection));
+  } else {
+    checksum = playlistChecksumUpdate(checksum, &header.selected,
+                                      sizeof(header.selected));
+  }
   Station scratch;
   for (uint16_t index = 0; index < header.count; ++index) {
     if (file.read(reinterpret_cast<uint8_t *>(&scratch), sizeof(scratch)) !=
@@ -356,9 +406,10 @@ bool readPlaylistFile(const char *path, const PlaylistFileHeader &expected) {
     }
   }
   file.close();
-  stationCount = static_cast<uint8_t>(header.count);
+  stationCount = header.count;
   selectedStation = header.selected;
   playlistSequence = header.sequence;
+  playlistFormatMigrationPending = header.version != kPlaylistFormatVersion;
   return true;
 }
 
@@ -381,8 +432,10 @@ bool loadPlaylistFromFiles() {
   if (preferences.begin(config::kPlaylistNamespace, true)) {
     const uint32_t storedSequence = preferences.getUInt(
         config::kPlaylistSequenceKey, 0);
-    const uint8_t storedSelection = preferences.getUChar(
-        config::kPlaylistSelectedKey, selectedStation);
+    const uint16_t storedSelection = preferences.getUShort(
+        config::kPlaylistSelected16Key,
+        preferences.getUChar(config::kPlaylistSelectedKey,
+                             static_cast<uint8_t>(min<uint16_t>(selectedStation, 255))));
     // If a first migration was interrupted after one snapshot, retain the
     // legacy NVS copy until a later structural save has restored both slots.
     legacyPlaylistMigrationPending =
@@ -408,7 +461,7 @@ bool writePlaylistFile(const char *path, uint32_t sequence) {
       kPlaylistFormatVersion,
       stationCount,
       selectedStation,
-      {0, 0, 0},
+      0,
       sequence,
       playlistChecksum(stationCount, selectedStation, stations),
   };
@@ -423,7 +476,7 @@ bool writePlaylistFile(const char *path, uint32_t sequence) {
     logPlaylistFileWriteFailure(path, "header write failed");
     return false;
   }
-  for (uint8_t index = 0; index < stationCount; ++index) {
+  for (uint16_t index = 0; index < stationCount; ++index) {
     if (file.write(reinterpret_cast<const uint8_t *>(&stations[index]),
                    sizeof(Station)) == sizeof(Station)) {
       continue;
@@ -474,8 +527,8 @@ bool retireLegacyPlaylist() {
   if (!legacyPlaylistMigrationPending || !bothPlaylistSlotsAreValid()) return true;
   if (!preferences.begin(config::kPlaylistNamespace, false)) return false;
   const bool saved = preferences.clear() &&
-                     preferences.putUChar(config::kPlaylistSelectedKey,
-                                           selectedStation) == 1 &&
+                     preferences.putUShort(config::kPlaylistSelected16Key,
+                                            selectedStation) == sizeof(uint16_t) &&
                      preferences.putUInt(config::kPlaylistSequenceKey,
                                          playlistSequence) == sizeof(uint32_t);
   preferences.end();
@@ -484,11 +537,14 @@ bool retireLegacyPlaylist() {
 }
 
 bool persistLegacyPlaylist() {
+  if (stationCount > 255 || selectedStation > 255) return false;
   if (!preferences.begin(config::kPlaylistNamespace, false)) return false;
   bool saved = preferences.clear() &&
-               preferences.putUChar(config::kPlaylistCountKey, stationCount) == 1 &&
-               preferences.putUChar(config::kPlaylistSelectedKey, selectedStation) == 1;
-  for (uint8_t index = 0; saved && index < stationCount; ++index) {
+               preferences.putUChar(config::kPlaylistCountKey,
+                                    static_cast<uint8_t>(stationCount)) == 1 &&
+               preferences.putUChar(config::kPlaylistSelectedKey,
+                                    static_cast<uint8_t>(selectedStation)) == 1;
+  for (uint16_t index = 0; saved && index < stationCount; ++index) {
     const String entry = String(stations[index].name) + '\n' +
                          stations[index].url + '\n' + stations[index].logo;
     saved = preferences.putString(stationKey(index).c_str(), entry) ==
@@ -521,8 +577,8 @@ bool markLegacyPlaylistStorePreferred() {
 
 bool persistPlaylistState() {
   if (!preferences.begin(config::kPlaylistNamespace, false)) return false;
-  const bool saved = preferences.putUChar(config::kPlaylistSelectedKey,
-                                           selectedStation) == 1 &&
+  const bool saved = preferences.putUShort(config::kPlaylistSelected16Key,
+                                            selectedStation) == sizeof(uint16_t) &&
                      preferences.putUInt(config::kPlaylistSequenceKey,
                                          playlistSequence) == sizeof(uint32_t);
   preferences.end();
@@ -532,7 +588,7 @@ bool persistPlaylistState() {
 bool persistSelectedStation() {
   // Selecting a station writes only the tiny state record.  The two-slot
   // playlist snapshot is reserved for structural changes, avoiding a full
-  // 48 KiB rewrite for every tap on the player UI.
+  // full playlist rewrite for every tap on the player UI.
   return persistPlaylistState();
 }
 
@@ -610,9 +666,11 @@ bool loadLegacyPlaylist() {
     return false;
   }
   const uint8_t storedCount = preferences.getUChar(config::kPlaylistCountKey, 0);
-  stationCount = min(storedCount, config::kMaxStations);
-  selectedStation = preferences.getUChar(config::kPlaylistSelectedKey, 0);
-  for (uint8_t index = 0; index < stationCount; ++index) {
+  stationCount = min<uint16_t>(storedCount, config::kMaxStations);
+  selectedStation = preferences.getUShort(
+      config::kPlaylistSelected16Key,
+      preferences.getUChar(config::kPlaylistSelectedKey, 0));
+  for (uint16_t index = 0; index < stationCount; ++index) {
     const String entry = preferences.getString(stationKey(index).c_str(), "");
     const int separator = entry.indexOf('\n');
     if (separator <= 0 || separator >= static_cast<int>(entry.length() - 1)) {
@@ -668,20 +726,54 @@ void loadPlaylist() {
   }
 }
 
-String playlistJson() {
-  String json;
-  json.reserve(48 + stationCount * 420U);
-  json = "{\"revision\":" + String(playlistRevision) +
-         ",\"selected\":" + String(selectedStation) + ",\"stations\":[";
-  for (uint8_t index = 0; index < stationCount; ++index) {
-    if (index > 0) {
-      json += ',';
-    }
-    json += "{\"id\":" + String(index) + ",\"name\":\"" +
-            jsonEscape(stations[index].name) + "\",\"url\":\"" +
-            jsonEscape(stations[index].url) + "\",\"logo\":\"" + jsonEscape(stations[index].logo) + "\"}";
+void sendPlaylistJson(bool includeUrls, int statusCode = 200) {
+  server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  server.sendHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+  server.send(statusCode, "application/json; charset=utf-8", "");
+  uint16_t groupCounts[256] = {};
+  for (uint16_t index = 0; index < stationCount; ++index) {
+    ++groupCounts[stationRegionOrder(stations[index].name)];
   }
-  return json + "]}";
+
+  String chunk = "{\"revision\":" + String(playlistRevision) +
+                 ",\"selected\":" + String(selectedStation) +
+                 ",\"groups\":[";
+  chunk.reserve(1024);
+  bool firstGroup = true;
+  for (uint8_t order = 0; order < stationGroupOrderCount; ++order) {
+    const uint8_t groupId = stationGroupOrder[order];
+    if (groupCounts[groupId] == 0) continue;
+    if (!firstGroup) chunk += ',';
+    firstGroup = false;
+    chunk += "{\"id\":" + String(groupId) + ",\"name\":\"" +
+             jsonEscape(stationGroupNameById(groupId)) + "\",\"count\":" +
+             String(groupCounts[groupId]) + "}";
+    if (chunk.length() >= 768) {
+      server.sendContent(chunk);
+      chunk = "";
+    }
+  }
+  chunk += "],\"stations\":[";
+  for (uint16_t index = 0; index < stationCount; ++index) {
+    if (index > 0) chunk += ',';
+    const uint8_t groupId = stationRegionOrder(stations[index].name);
+    chunk += "{\"id\":" + String(index) + ",\"name\":\"" +
+             jsonEscape(stations[index].name) + "\"";
+    if (includeUrls) {
+      chunk += ",\"url\":\"" + jsonEscape(stations[index].url) + "\"";
+    }
+    chunk += ",\"logo\":\"" + jsonEscape(stations[index].logo) +
+             "\",\"group_id\":" + String(groupId) +
+             ",\"group\":\"" + jsonEscape(stationGroupNameById(groupId)) +
+             "\"}";
+    if (chunk.length() >= 768) {
+      server.sendContent(chunk);
+      chunk = "";
+    }
+  }
+  chunk += "]}";
+  server.sendContent(chunk);
+  server.sendContent("");
 }
 
 void startAccessPoint() {
@@ -1014,18 +1106,18 @@ void handleForgetWifi() {
   ESP.restart();
 }
 
-bool parseStationId(uint8_t &id) {
+bool parseStationId(uint16_t &id) {
   if (!server.hasArg("id")) return false;
   const String value = server.arg("id");
   if (value.isEmpty()) return false;
-  uint16_t parsed = 0;
+  uint32_t parsed = 0;
   for (size_t index = 0; index < value.length(); ++index) {
     const char character = value[index];
     if (character < '0' || character > '9') return false;
     parsed = parsed * 10U + static_cast<uint8_t>(character - '0');
-    if (parsed >= stationCount) return false;
+    if (parsed >= stationCount || parsed > UINT16_MAX) return false;
   }
-  id = static_cast<uint8_t>(parsed);
+  id = static_cast<uint16_t>(parsed);
   return true;
 }
 
@@ -1047,45 +1139,73 @@ void handleAddStation() {
     sendJson("{\"error\":\"name or URL is invalid\"}", 400);
     return;
   }
+  const uint16_t previousCount = stationCount;
+  const uint16_t previousSelection = selectedStation;
+  Station *previousStations = previousCount == 0 ? nullptr :
+      static_cast<Station *>(ps_malloc(previousCount * sizeof(Station)));
+  if (previousCount > 0 && previousStations == nullptr) {
+    sendJson("{\"error\":\"not enough memory to update playlist\"}", 500);
+    return;
+  }
+  if (previousStations != nullptr) {
+    memcpy(previousStations, stations, previousCount * sizeof(Station));
+  }
   stations[stationCount] = Station{};
   strlcpy(stations[stationCount].name, name.c_str(), sizeof(stations[0].name));
   strlcpy(stations[stationCount].url, url.c_str(), sizeof(stations[0].url));
   ++stationCount;
-  if (!persistPlaylist()) {
-    --stationCount;
+  if (!regroupStationsInMemory() || !persistPlaylist()) {
+    stationCount = previousCount;
+    selectedStation = previousSelection;
+    if (previousStations != nullptr) {
+      memcpy(stations, previousStations, previousCount * sizeof(Station));
+    }
     stations[stationCount] = Station{};
+    free(previousStations);
     sendJson("{\"error\":\"could not save playlist\"}", 500);
     return;
   }
-  sendJson(playlistJson(), 201);
+  free(previousStations);
+  sendPlaylistJson(true, 201);
 }
 
 void handleUpdateStation() {
-  uint8_t id;
+  uint16_t id;
   const String name = server.arg("name");
   const String url = server.arg("url");
   if (!parseStationId(id) || !validateStation(name, url)) {
     sendJson("{\"error\":\"invalid station data\"}", 400);
     return;
   }
-  const Station previous = stations[id];
+  Station *previousStations = static_cast<Station *>(
+      ps_malloc(stationCount * sizeof(Station)));
+  if (previousStations == nullptr) {
+    sendJson("{\"error\":\"not enough memory to update playlist\"}", 500);
+    return;
+  }
+  memcpy(previousStations, stations, stationCount * sizeof(Station));
+  const uint16_t previousSelection = selectedStation;
   strlcpy(stations[id].name, name.c_str(), sizeof(stations[id].name));
   strlcpy(stations[id].url, url.c_str(), sizeof(stations[id].url));
-  const bool saved = persistPlaylist();
-  if (!saved) stations[id] = previous;
-  sendJson(saved ? playlistJson() : "{\"error\":\"could not save playlist\"}",
-           saved ? 200 : 500);
+  const bool saved = regroupStationsInMemory() && persistPlaylist();
+  if (!saved) {
+    memcpy(stations, previousStations, stationCount * sizeof(Station));
+    selectedStation = previousSelection;
+  }
+  free(previousStations);
+  if (saved) sendPlaylistJson(true);
+  else sendJson("{\"error\":\"could not save playlist\"}", 500);
 }
 
 void handleDeleteStation() {
-  uint8_t id;
+  uint16_t id;
   if (!parseStationId(id) || stationCount <= 1) {
     sendJson("{\"error\":\"cannot delete this station\"}", 400);
     return;
   }
-  const uint8_t previousSelection = selectedStation;
+  const uint16_t previousSelection = selectedStation;
   const Station removed = stations[id];
-  for (uint8_t index = id; index + 1 < stationCount; ++index) {
+  for (uint16_t index = id; index + 1 < stationCount; ++index) {
     stations[index] = stations[index + 1];
   }
   --stationCount;
@@ -1097,36 +1217,36 @@ void handleDeleteStation() {
   }
   const bool saved = persistPlaylist();
   if (!saved) {
-    for (uint8_t index = stationCount; index > id; --index) {
+    for (uint16_t index = stationCount; index > id; --index) {
       stations[index] = stations[index - 1];
     }
     stations[id] = removed;
     ++stationCount;
     selectedStation = previousSelection;
   }
-  sendJson(saved ? playlistJson() : "{\"error\":\"could not save playlist\"}",
-           saved ? 200 : 500);
+  if (saved) sendPlaylistJson(true);
+  else sendJson("{\"error\":\"could not save playlist\"}", 500);
 }
 
 void handleSelectStation() {
-  uint8_t id;
+  uint16_t id;
   if (!parseStationId(id)) {
     sendJson("{\"error\":\"invalid station id\"}", 400);
     return;
   }
-  const uint8_t previousSelection = selectedStation;
+  const uint16_t previousSelection = selectedStation;
   selectedStation = id;
   const bool saved = persistSelectedStation();
   if (!saved) selectedStation = previousSelection;
   if (saved && onStationSelected != nullptr) {
     onStationSelected(selectedStation);
   }
-  sendJson(saved ? playlistJson() : "{\"error\":\"could not save playlist\"}",
-           saved ? 200 : 500);
+  if (saved) sendPlaylistJson(true);
+  else sendJson("{\"error\":\"could not save playlist\"}", 500);
 }
 
 void handleMoveStation() {
-  uint8_t id;
+  uint16_t id;
   const String direction = server.arg("direction");
   if (!parseStationId(id) ||
       (direction != "up" && direction != "down") ||
@@ -1135,15 +1255,15 @@ void handleMoveStation() {
     sendJson("{\"error\":\"cannot move station\"}", 400);
     return;
   }
-  const uint8_t other = direction == "up" ? id - 1 : id + 1;
+  const uint16_t other = direction == "up" ? id - 1 : id + 1;
   const Station selected = stations[id];
   stations[id] = stations[other];
   stations[other] = selected;
   if (selectedStation == id) selectedStation = other;
   else if (selectedStation == other) selectedStation = id;
   const bool saved = persistPlaylist();
-  sendJson(saved ? playlistJson() : "{\"error\":\"could not save playlist\"}",
-           saved ? 200 : 500);
+  if (saved) sendPlaylistJson(true);
+  else sendJson("{\"error\":\"could not save playlist\"}", 500);
 }
 
 }  // namespace
@@ -1260,9 +1380,9 @@ constexpr BuiltinStation kBuiltinStations[] = {
   {"CNR乡村之声","https://radio.0472.org/?id=654"},
   {"CNR南海之声","https://radio.0472.org/?id=664"},
   {"北京交通广播","http://ls.qingting.fm/live/336.m3u8"},
-  {"北京新闻广播","https://lhttp.qtfm.cn/live/339/64k.mp3"},
+  {"北京新闻广播","https://satellitepull.cnr.cn/live/wxbjxwgb/playlist.m3u8"},
   {"北京文艺广播","http://ls.qingting.fm/live/333.m3u8"},
-  {"北京城市广播","https://brtv-radiolive.rbc.cn/alive/fm1073.m3u8"},
+  {"北京城市广播","https://satellitepull.cnr.cn/live/wxbjcsfwgl/playlist.m3u8"},
   {"北京体育广播","https://brtv-radiolive.rbc.cn/alive/fm1025.m3u8"},
   {"北京阳光调频","https://lhttp.qtfm.cn/live/5021739/64k.mp3"},
   {"北京经典调频","https://radio.0472.org/?id=1254"},
@@ -1272,48 +1392,48 @@ constexpr BuiltinStation kBuiltinStations[] = {
   {"CRI英语资讯","http://sk.cri.cn/am846.m3u8"},
   {"RTHK3","https://rthkradio3-live.akamaized.net/hls/live/2040079/radio3/master.m3u8"},
   {"香港电台普通话台","https://rthkradiopth-live.akamaized.net/hls/live/2040082/radiopth/master.m3u8"},
-  {"湖南经济广播","https://radio.0472.org/?id=1056"},
+  {"湖南经济广播","https://satellitepull.cnr.cn/live/wx32hunjjgb/playlist.m3u8"},
   {"湖南新闻频道","https://radio.0472.org/?id=525"},
-  {"湖南潇湘之声","https://radio.0472.org/?id=526"},
-  {"重庆文艺广播","http://satellitepull.cnr.cn/live/wxcqwygb/playlist.m3u8"},
+  {"湖南潇湘之声","https://satellitepull.cnr.cn/live/wx32hunyygb/playlist.m3u8"},
+  {"重庆文艺广播","https://satellitepull.cnr.cn/live/wxcqwygb/playlist.m3u8"},
   {"上海故事广播","http://live.cooltv.top/tv/news1296.php?id=10"},
   {"山西文艺广播","http://radiolive.sxrtv.com/live/wenyi/playlist.m3u8"},
-  {"江苏文艺广播","http://satellitepull.cnr.cn/live/wx32jswygb/playlist.m3u8"},
-  {"江苏故事广播","http://satellitepull.cnr.cn/live/wx32jsgsgb/playlist.m3u8"},
+  {"江苏文艺广播","https://satellitepull.cnr.cn/live/wx32jswygb/playlist.m3u8"},
+  {"江苏故事广播","https://satellitepull.cnr.cn/live/wx32jsgsgb/playlist.m3u8"},
   {"上海戏曲广播","https://radio.0472.org/?id=1314"},
   {"陕西故事广播","https://radio.0472.org/?id=1133"},
   {"北京音乐广播","http://ls.qingting.fm/live/332.m3u8"},
-  {"湖南金鹰之声","https://radio.0472.org/?id=523"},
+  {"湖南金鹰之声","https://satellitepull.cnr.cn/live/wx32955/playlist.m3u8"},
   {"芒果时空音乐","https://radio.0472.org/?id=524"},
-  {"湖南交通广播","https://radio.0472.org/?id=1059"},
+  {"湖南交通广播","https://satellitepull.cnr.cn/live/wx32hunjtgb/playlist.m3u8"},
   {"湖南音乐之声","https://radio.0472.org/?id=1060"},
   {"长沙交通广播","https://radio.0472.org/?id=1061"},
   {"长沙音乐广播","https://radio.0472.org/?id=1531"},
-  {"广东音乐之声","http://ls.qingting.fm/live/1260.m3u8"},
-  {"江西音乐广播","http://satellitepull.cnr.cn/live/wx32jiangxyygb/playlist.m3u8"},
-  {"河北音乐广播","https://radio.0472.org/?id=381"},
+  {"广东音乐之声","https://satellitepull.cnr.cn/live/wxgdyyzs/playlist.m3u8"},
+  {"江西音乐广播","https://satellitepull.cnr.cn/live/wx32jiangxyygb/playlist.m3u8"},
+  {"河北音乐广播","https://satellitepull.cnr.cn/live/wxhebyygb/playlist.m3u8"},
   {"深圳音乐频率","https://radio.0472.org/?id=498"},
   {"南京音乐广播","http://hls.njgb.com/live_hls/4/playlist.m3u8"},
-  {"江苏音乐广播","https://radio.0472.org/?id=415"},
+  {"江苏音乐广播","https://satellitepull.cnr.cn/live/wx32jsyygb/playlist.m3u8"},
   {"河北汽车音乐","https://radio.pull.hebtv.com/live/hebqcyy.m3u8"},
-  {"重庆音乐广播","https://radio.0472.org/?id=372"},
+  {"重庆音乐广播","https://satellitepull.cnr.cn/live/wxcqyygb/playlist.m3u8"},
   {"龙江音乐广播","https://radio.0472.org/?id=552"},
   {"内蒙音乐之声","https://radio.0472.org/?id=572"},
-  {"宁夏音乐广播","https://radio.0472.org/?id=1701"},
-  {"陕西音乐广播","https://radio.0472.org/?id=561"},
+  {"宁夏音乐广播","https://satellitepull.cnr.cn/live/wxnxyygb/playlist.m3u8"},
+  {"陕西音乐广播","https://satellitepull.cnr.cn/live/wxsxxyygb/playlist.m3u8"},
   {"青海音乐广播","https://radio.0472.org/?id=616"},
   {"山西音乐广播","https://radio.0472.org/?id=637"},
-  {"山东音乐广播","https://radio.0472.org/?id=702"},
-  {"安徽音乐广播","https://radio.0472.org/?id=601"},
+  {"山东音乐广播","https://satellitepull.cnr.cn/live/wxsdyygb/playlist.m3u8"},
+  {"安徽音乐广播","https://satellitepull.cnr.cn/live/wxahyygb/playlist.m3u8"},
   {"江苏经典流行","http://satellitepull.cnr.cn/live/wx32jsjdlxyy/playlist.m3u8"},
   {"浙江音乐调频","https://radio.0472.org/?id=928"},
   {"厦门音乐广播","https://radio.0472.org/?id=1897"},
-  {"云南音乐广播","https://radio.0472.org/?id=592"},
+  {"云南音乐广播","https://satellitepull.cnr.cn/live/wxynyygb/playlist.m3u8"},
   {"广西音乐台","https://radio.0472.org/?id=590"},
-  {"贵州音乐广播","https://radio.0472.org/?id=435"},
+  {"贵州音乐广播","https://satellitepull.cnr.cn/live/wx32gzyygb/playlist.m3u8"},
   {"新疆音乐广播","https://radio.0472.org/?id=1158"},
-  {"海南音乐广播","https://radio.0472.org/?id=543"},
-  {"河北文艺广播","http://satellitepull.cnr.cn/live/wxhebwygb/playlist.m3u8"},
+  {"海南音乐广播","https://satellitepull.cnr.cn/live/wxhainyygb/playlist.m3u8"},
+  {"河北文艺广播","https://satellitepull.cnr.cn/live/wxhebwygb/playlist.m3u8"},
   {"RFI 法广中文","https://rfienchinois64k.ice.infomaniak.ch/rfienchinois-64.mp3"},
   {"台湾中广新闻网","https://n03.rcs.revma.com/78fm9wyy2tzuv"},
   {"BBC World Service","http://as-hls-ww-live.akamaized.net/pool_87948813/live/ww/bbc_world_service/bbc_world_service.isml/bbc_world_service-audio%3d96000.norewind.m3u8"},
@@ -1357,6 +1477,290 @@ constexpr BuiltinStation kBuiltinStations[] = {
   {"台湾中央广播电台","https://streamak0138.akamaized.net/live0138lh-mbm9/_definst_/rti3/chunklist.m3u8"},
   {"台湾 News98","https://n17a-eu.rcs.revma.com/pntx1639ntzuv"},
   {"马来西亚 Ai FM","https://playerservices.streamtheworld.com/api/livestream-redirect/AI_FMAAC_SC"},
+  {"BCC中广流行","http://stream.rcs.revma.com/aw9uqyxy2tzuv"},
+  {"BCC中广新闻","http://stream.rcs.revma.com/78fm9wyy2tzuv"},
+  {"BCC中广音乐","http://stream.rcs.revma.com/ks4vsmg3qtzuv"},
+  {"Capital FM","http://22893.live.streamtheworld.com:3690/CAPITAL958FMAAC.aac"},
+  {"China Plus Radio","https://sk.cri.cn/am846.m3u8"},
+  {"Class FM","http://22393.live.streamtheworld.com/CLASS95.mp3"},
+  {"CNA938","http://playerservices.streamtheworld.com/api/livestream-redirect/938NOW_PREM.aac"},
+  {"CRI 环球资讯广播 FM90.5","http://sk.cri.cn/905.m3u8"},
+  {"CRI世界华声","http://sk.cri.cn/hxfh.m3u8"},
+  {"安徽交通广播","https://satellitepull.cnr.cn/live/wxahjtgb/playlist.m3u8"},
+  {"安徽经济广播","https://satellitepull.cnr.cn/live/wxahjjgb/playlist.m3u8"},
+  {"安徽旅游广播","https://satellitepull.cnr.cn/live/wxahlygb/playlist.m3u8"},
+  {"安徽农村广播","https://satellitepull.cnr.cn/live/wxahncgb/playlist.m3u8"},
+  {"安徽生活广播","https://satellitepull.cnr.cn/live/wxahshgb/playlist.m3u8"},
+  {"安徽戏曲广播","https://satellitepull.cnr.cn/live/wxahxqgb/playlist.m3u8"},
+  {"安徽小说评书","https://satellitepull.cnr.cn/live/wxahxspsgb/playlist.m3u8"},
+  {"安徽之声","https://satellitepull.cnr.cn/live/wxahxxgb/playlist.m3u8"},
+  {"巴渝之声 FM104.5","http://ls.qingting.fm/live/3545693.m3u8"},
+  {"保定交通广播 FM104.8","http://ls.qingting.fm/live/28140.m3u8"},
+  {"保定经典964汽车音乐广播","http://ls.qingting.fm/live/2227017.m3u8"},
+  {"保定新闻广播 FM93.7","http://ls.qingting.fm/live/3701149.m3u8"},
+  {"保山综合广播 FM98.7","http://ls.qingting.fm/live/3702178.m3u8"},
+  {"北京好音乐 FM95.9","http://ls.qingting.fm/live/2131011.m3u8"},
+  {"北京文艺广播 FM87.6","http://live.xmcdn.com/live/94/64.m3u8"},
+  {"兵团综合广播","https://satellitepull.cnr.cn/live/wxbtzs/playlist.m3u8"},
+  {"常州交通广播 FM90","http://ls.qingting.fm/live/2796.m3u8"},
+  {"郴州音乐交通广播 FM102.8","http://ls.qingting.fm/live/86747.m3u8"},
+  {"郴州综合广播 FM99.2","http://ls.qingting.fm/live/76765.m3u8"},
+  {"沈阳都市广播 FM92.1","http://ls.qingting.fm/live/1099.m3u8"},
+  {"沈阳新闻广播 FM104.5","http://ls.qingting.fm/live/23891.m3u8"},
+  {"沈阳音乐广播 路上好朋友 FM98.6","http://ls.qingting.fm/live/1101.m3u8"},
+  {"楚天交通广播","https://satellitepull.cnr.cn/live/wx32hubctjtgb/playlist.m3u8"},
+  {"第一财经广播","https://satellitepull.cnr.cn/live/wx32dycjgb/playlist.m3u8"},
+  {"东广新闻台 FM90.9","http://ls.qingting.fm/live/275.m3u8"},
+  {"福建财经961","https://satellitepull.cnr.cn/live/wx32fjdnjjgb/playlist.m3u8"},
+  {"福建东南广播","https://satellitepull.cnr.cn/live/wx32fjdngb/playlist.m3u8"},
+  {"福建都市广播","https://satellitepull.cnr.cn/live/wx32fjdndsgb/playlist.m3u8"},
+  {"福建交通广播","https://satellitepull.cnr.cn/live/wx32fjdnjtgb/playlist.m3u8"},
+  {"福建经济广播 FM96.1","http://live.xmcdn.com/live/789/64.m3u8"},
+  {"福建私家车广播 FM98.7","http://live.xmcdn.com/live/793/64.m3u8"},
+  {"福建新闻广播","https://satellitepull.cnr.cn/live/wx32fjxwgb/playlist.m3u8"},
+  {"甘肃都市调频","https://satellitepull.cnr.cn/live/wxgsdstb/playlist.m3u8"},
+  {"甘肃黄河之声","https://satellitepull.cnr.cn/live/wxgshhzs/playlist.m3u8"},
+  {"甘肃交通广播","https://satellitepull.cnr.cn/live/wxgsjtgb/playlist.m3u8"},
+  {"甘肃农村广播","https://satellitepull.cnr.cn/live/wxgsncgb/playlist.m3u8"},
+  {"甘肃青春调频","https://satellitepull.cnr.cn/live/wxgsqcgb/playlist.m3u8"},
+  {"甘肃新闻综合","https://satellitepull.cnr.cn/live/wxgsxwzhgb/playlist.m3u8"},
+  {"广东城市之声","https://satellitepull.cnr.cn/live/wxgdcszs/playlist.m3u8"},
+  {"广东股市广播","https://satellitepull.cnr.cn/live/wxgdgsgb/playlist.m3u8"},
+  {"广东南方生活广播 FM93.6","http://live.xmcdn.com/live/249/64.m3u8"},
+  {"广东南粤之声","https://satellitepull.cnr.cn/live/wxnyzs/playlist.m3u8"},
+  {"广东文体广播","https://satellitepull.cnr.cn/live/wxgdwtgb/playlist.m3u8"},
+  {"广东新闻频道 FM91.4","http://live.xmcdn.com/live/245/64.m3u8"},
+  {"广东羊城交通广播 FM105.2","http://live.xmcdn.com/live/248/64.m3u8"},
+  {"广东音乐之声 FM99.3","http://live.xmcdn.com/live/74/64.m3u8"},
+  {"广东优悦广播(南粤) FM105.7","http://ls.qingting.fm/live/470.m3u8"},
+  {"广东珠江经济台 FM97.4","http://live.xmcdn.com/live/252/64.m3u8"},
+  {"广西北部湾之声(广西对外广播) FM96.4","http://ls.qingting.fm/live/1757.m3u8"},
+  {"广西对外广播","https://satellitepull.cnr.cn/live/wx32gxdwgb/playlist.m3u8"},
+  {"广西交通广播","https://satellitepull.cnr.cn/live/wx32gxjtgb/playlist.m3u8"},
+  {"广西交通台 FM100.3","http://ls.qingting.fm/live/1758.m3u8"},
+  {"广西教育生活","https://satellitepull.cnr.cn/live/wx32gbjyshgb/playlist.m3u8"},
+  {"广西经济广播","https://satellitepull.cnr.cn/live/wx32gxjjgb/playlist.m3u8"},
+  {"广西女主播电台 FM97.0","http://ls.qingting.fm/live/1754.m3u8"},
+  {"广西人民广播","https://satellitepull.cnr.cn/live/wx32gxrmgb/playlist.m3u8"},
+  {"广西私家车930 FM93.0","http://ls.qingting.fm/live/1756.m3u8"},
+  {"广西文艺广播","https://satellitepull.cnr.cn/live/wx32gxwygb/playlist.m3u8"},
+  {"广西新闻910 FM91.0","http://ls.qingting.fm/live/1753.m3u8"},
+  {"广西音乐台 FM95.0","http://ls.qingting.fm/live/4875.m3u8"},
+  {"广州 MYFM 88.0 (都市生活)","http://ls.qingting.fm/live/52712.m3u8"},
+  {"广州花都广播 FM100.5","http://ls.qingting.fm/live/1263.m3u8"},
+  {"广州交通电台 FM106.1","http://ls.qingting.fm/live/4955.m3u8"},
+  {"广州汽车音乐电台 FM102.7","http://live.xmcdn.com/live/257/64.m3u8"},
+  {"广州新闻电台 FM96.2","http://live.xmcdn.com/live/256/64.m3u8"},
+  {"贵州电台交通广播 FM95.2","http://ls.qingting.fm/live/23927.m3u8"},
+  {"贵州都市广播","https://satellitepull.cnr.cn/live/wx32gzqcgb/playlist.m3u8"},
+  {"贵州故事广播","https://satellitepull.cnr.cn/live/wx32gzgsgb/playlist.m3u8"},
+  {"贵州经济广播","https://satellitepull.cnr.cn/live/wx32gzjjgb/playlist.m3u8"},
+  {"贵州旅游广播","https://satellitepull.cnr.cn/live/wx32gzlygb/playlist.m3u8"},
+  {"贵州综合广播","https://satellitepull.cnr.cn/live/wx32gzwxwzhgb/playlist.m3u8"},
+  {"海口音乐广播","http://ls.qingting.fm/live/23859.m3u8"},
+  {"海南国际旅游之声 FM103.8","http://ls.qingting.fm/live/1862.m3u8"},
+  {"海南交通广播","https://satellitepull.cnr.cn/live/wxhainjtgb/playlist.m3u8"},
+  {"海南民生广播 FM101","http://ls.qingting.fm/live/1511803.m3u8"},
+  {"海南新闻广播","https://satellitepull.cnr.cn/live/wxhainxwgb/playlist.m3u8"},
+  {"河北故事广播 FM107.9","http://ls.qingting.fm/live/1645.m3u8"},
+  {"河北交通广播 FM99.2","http://ls.qingting.fm/live/1646.m3u8"},
+  {"河北交通广播","https://satellitepull.cnr.cn/live/wxhebjtgb/playlist.m3u8"},
+  {"河北经济广播","https://satellitepull.cnr.cn/live/wxhebjjgb/playlist.m3u8"},
+  {"河北旅游广播 AM603","http://ls.qingting.fm/live/1651.m3u8"},
+  {"河北农民广播 AM558","http://ls.qingting.fm/live/1650.m3u8"},
+  {"河北生活广播","https://satellitepull.cnr.cn/live/wxhebshgb/playlist.m3u8"},
+  {"河北私家车广播 FM90.7","http://ls.qingting.fm/live/4868.m3u8"},
+  {"河北新闻广播 FM104.3","http://ls.qingting.fm/live/1644.m3u8"},
+  {"河北综合广播","https://satellitepull.cnr.cn/live/wxhebzhgb/playlist.m3u8"},
+  {"河南My Radio广播","https://stream.hndt.com/live/yingshi/playlist.m3u8"},
+  {"河南大象资讯台","https://stream.hndt.com/live/nongcun/playlist.m3u8"},
+  {"河南交通广播","https://stream.hndt.com/live/jiaotong/playlist.m3u8"},
+  {"河南教育广播","https://stream.hndt.com/live/jiaoyu/playlist.m3u8"},
+  {"河南经济广播","https://satellitepull.cnr.cn/live/wxhnjjgb/playlist.m3u8"},
+  {"河南旅游广播","https://satellitepull.cnr.cn/live/wxhnlygb/playlist.m3u8"},
+  {"河南农村广播","https://satellitepull.cnr.cn/live/wxhnncgb/playlist.m3u8"},
+  {"河南戏曲广播","https://satellitepull.cnr.cn/live/wxhnxqgb/playlist.m3u8"},
+  {"河南新闻广播","https://satellitepull.cnr.cn/live/wxhnxwgb/playlist.m3u8"},
+  {"河南信息广播","https://satellitepull.cnr.cn/live/wxhnxxgb/playlist.m3u8"},
+  {"河南音乐广播","https://stream.hndt.com/live/yinyue/playlist.m3u8"},
+  {"鹤壁交通音乐广播 FM93.5","http://ls.qingting.fm/live/3032681.m3u8"},
+  {"鹤山电台104.7","http://ls.qingting.fm/live/1286.m3u8"},
+  {"黑龙江爱家调频","https://satellitepull.cnr.cn/live/wx32hljajgb/playlist.m3u8"},
+  {"黑龙江朝鲜语","https://satellitepull.cnr.cn/live/wx32hljcygb/playlist.m3u8"},
+  {"黑龙江高校广播","https://satellitepull.cnr.cn/live/wx32hljgxgb/playlist.m3u8"},
+  {"黑龙江交通广播","https://satellitepull.cnr.cn/live/wx32hljjtgb/playlist.m3u8"},
+  {"黑龙江女性广播","https://satellitepull.cnr.cn/live/wx32hljnxgb/playlist.m3u8"},
+  {"黑龙江私家车","https://satellitepull.cnr.cn/live/wx32hljsjcgb/playlist.m3u8"},
+  {"黑龙江乡村广播","https://satellitepull.cnr.cn/live/wx32hljxcgb/playlist.m3u8"},
+  {"黑龙江新闻广播","https://satellitepull.cnr.cn/live/wx32hljxwgb/playlist.m3u8"},
+  {"黑龙江音乐广播","https://satellitepull.cnr.cn/live/wx32hljyygb/playlist.m3u8"},
+  {"衡阳交通广播 FM101.8","http://ls.qingting.fm/live/5079921.m3u8"},
+  {"衡阳新闻广播 FM98.9","http://ls.qingting.fm/live/5079970.m3u8"},
+  {"呼和浩特交通广播 FM107.4","http://ls.qingting.fm/live/2218715.m3u8"},
+  {"呼和浩特新闻综合广播 FM92.9","http://ls.qingting.fm/live/2218711.m3u8"},
+  {"呼伦贝尔汉语广播","https://satellitepull.cnr.cn/live/wx32nmghlbehygb/playlist.m3u8"},
+  {"呼伦贝尔蒙语广播","https://satellitepull.cnr.cn/live/wx32nmghlbemygb/playlist.m3u8"},
+  {"湖北经典音乐","https://satellitepull.cnr.cn/live/wx32hubyygb/playlist.m3u8"},
+  {"湖北经济广播","https://satellitepull.cnr.cn/live/wx32hubjjgb/playlist.m3u8"},
+  {"湖北之声","https://satellitepull.cnr.cn/live/wx32hubzsgb/playlist.m3u8"},
+  {"湖南新闻广播","https://satellitepull.cnr.cn/live/wx32hunxwgb/playlist.m3u8"},
+  {"湖州交通文艺广播 FM98.5","http://ls.qingting.fm/live/2811.m3u8"},
+  {"湖州经济广播 FM103.5","http://ls.qingting.fm/live/2812.m3u8"},
+  {"湖州综合广播 湖州之声 FM05","http://ls.qingting.fm/live/2810.m3u8"},
+  {"华语环球","https://sk.cri.cn/hyhq.m3u8"},
+  {"惠州新闻综合广播 FM100","http://ls.qingting.fm/live/5016.m3u8"},
+  {"惠州音乐广播 FM90.7","http://ls.qingting.fm/live/2212959.m3u8"},
+  {"吉林交通广播","https://satellitepull.cnr.cn/live/wxjljtgb/playlist.m3u8"},
+  {"吉林经济广播","https://satellitepull.cnr.cn/live/wxjljjgb/playlist.m3u8"},
+  {"吉林乡村广播","https://satellitepull.cnr.cn/live/wxjlxcgb/playlist.m3u8"},
+  {"吉林新闻综合","https://satellitepull.cnr.cn/live/wxjlxwzhgb/playlist.m3u8"},
+  {"济南故事广播 FM104.3","http://ls.qingting.fm/live/1672.m3u8"},
+  {"济南经济广播 FM90.9","http://ls.qingting.fm/live/1668.m3u8"},
+  {"济南私家车广播 FM93.6","http://ls.qingting.fm/live/1670.m3u8"},
+  {"江苏财经广播 AM585","http://lzlive.vojs.cn/caijing/92/live.m3u8"},
+  {"江苏财经广播","https://satellitepull.cnr.cn/live/wx32jscjgb/playlist.m3u8"},
+  {"江苏健康广播","https://satellitepull.cnr.cn/live/wx32jsjkgb/playlist.m3u8"},
+  {"江苏交通广播","https://satellitepull.cnr.cn/live/wx32jsjtgb/playlist.m3u8"},
+  {"江苏金陵之声","https://satellitepull.cnr.cn/live/wx32jsqctp/playlist.m3u8"},
+  {"江苏经典流行音乐","https://satellitepull.cnr.cn/live/wx32jsjdlxyy/playlist.m3u8"},
+  {"江苏新闻综合","https://satellitepull.cnr.cn/live/wx32jsxwzhgb/playlist.m3u8"},
+  {"江西交通广播","https://satellitepull.cnr.cn/live/wx32jiangxjtgb/playlist.m3u8"},
+  {"江西新闻广播","https://satellitepull.cnr.cn/live/wx32jiangxxwgb/playlist.m3u8"},
+  {"九江交通广播 FM88.4 FM88.9","http://ls.qingting.fm/live/2785094.m3u8"},
+  {"昆明汽车广播 FM95.4","http://ls.qingting.fm/live/1936.m3u8"},
+  {"昆明阳光广播","http://ls.qingting.fm/live/1934.m3u8"},
+  {"拉萨人民广播电台 FM91.4","http://ls.qingting.fm/live/3244137.m3u8"},
+  {"辽宁交通广播","https://satellitepull.cnr.cn/live/wxlnjtgb/playlist.m3u8"},
+  {"辽宁经济广播","https://satellitepull.cnr.cn/live/wxlnjjtb/playlist.m3u8"},
+  {"辽宁文艺广播","https://satellitepull.cnr.cn/live/wxlnwygb/playlist.m3u8"},
+  {"辽宁乡村广播","https://satellitepull.cnr.cn/live/wxlnxcgb/playlist.m3u8"},
+  {"辽宁之声","https://satellitepull.cnr.cn/live/wxlnzhgb/playlist.m3u8"},
+  {"龙广交通广播 FM99.8","http://ls.qingting.fm/live/4973.m3u8"},
+  {"龙广青苹果之声 FM104.6","http://ls.qingting.fm/live/4976.m3u8"},
+  {"梅州新闻广播 FM94.8","http://ls.qingting.fm/live/24173.m3u8"},
+  {"每日歌曲","https://lhttp.qingting.fm/live/5021381/64k.mp3"},
+  {"蒙古语综合广播","https://satellitepull.cnr.cn/live/wx32nmgmyxwgb/playlist.m3u8"},
+  {"南方生活广播","https://satellitepull.cnr.cn/live/wxgdnfshgb/playlist.m3u8"},
+  {"南宁交通音乐广播 FM107.4","http://ls.qingting.fm/live/80793.m3u8?aac"},
+  {"南通交通广播 FM92.9","http://ls.qingting.fm/live/2216385.m3u8"},
+  {"南通新闻广播 FM97.0","http://ls.qingting.fm/live/1611381.m3u8"},
+  {"内蒙古对外广播","https://satellitepull.cnr.cn/live/wx32nmgdwgb/playlist.m3u8"},
+  {"内蒙古汉语广播","https://satellitepull.cnr.cn/live/wx32nmghyzhxwgb/playlist.m3u8"},
+  {"内蒙古交通之声","https://satellitepull.cnr.cn/live/wx32nmgjtgb/playlist.m3u8"},
+  {"内蒙古绿野之声","https://satellitepull.cnr.cn/live/wx32nmglyzs/playlist.m3u8"},
+  {"内蒙古蒙古语广播","https://satellitepull.cnr.cn/live/wx32nmgmygb/playlist.m3u8"},
+  {"内蒙古音乐之声","https://satellitepull.cnr.cn/live/wx32nmgyygb/playlist.m3u8"},
+  {"宁夏新闻广播","https://satellitepull.cnr.cn/live/wxnxxwgb/playlist.m3u8"},
+  {"宁波动感105 FM105.2","http://ls.qingting.fm/live/3047946.m3u8"},
+  {"宁波交通广播 FM93.9","http://ls.qingting.fm/live/1140.m3u8"},
+  {"黔西南金州之声 FM107.9","http://ls.qingting.fm/live/5045.m3u8"},
+  {"青岛故事广播 FM95.2","http://ls.qingting.fm/live/4956.m3u8"},
+  {"青岛交通广播 FM89.7","http://ls.qingting.fm/live/1676.m3u8"},
+  {"青岛西海岸城市生活广播 FM92.6","http://ls.qingting.fm/live/33446.m3u8"},
+  {"青岛新闻广播 FM107.6","http://ls.qingting.fm/live/1673.m3u8"},
+  {"青海藏语广播","https://satellitepull.cnr.cn/live/wx32qhzygb/playlist.m3u8"},
+  {"青海交通音乐","https://satellitepull.cnr.cn/live/wx32qhjtyygb/playlist.m3u8"},
+  {"青海交通音乐广播 FM97.2","http://ls.qingting.fm/live/5009.m3u8"},
+  {"青海经济广播","https://satellitepull.cnr.cn/live/wx32qhjjgb/playlist.m3u8"},
+  {"青海之声","https://satellitepull.cnr.cn/live/wx32qhwxzhgb/playlist.m3u8"},
+  {"山东交通广播","https://satellitepull.cnr.cn/live/wxsdjtgb/playlist.m3u8"},
+  {"山东经典音乐","https://audiolive302.iqilu.com/sdradioShenghuo/sdradio04/playlist.m3u8"},
+  {"山东经济广播","https://satellitepull.cnr.cn/live/wxsdjjgb/playlist.m3u8"},
+  {"山东女主播电台 FM97.5","http://ls.qingting.fm/live/60258.m3u8"},
+  {"山东生活广播 MyFM FM105","http://ls.qingting.fm/live/60260.m3u8"},
+  {"山东体育休闲","https://satellitepull.cnr.cn/live/wxsdtyxxgb/playlist.m3u8"},
+  {"山东文艺广播","https://satellitepull.cnr.cn/live/wxsdwyssgb/playlist.m3u8"},
+  {"山东乡村广播","https://satellitepull.cnr.cn/live/wxsdxcgb/playlist.m3u8"},
+  {"山西综合广播","https://satellitepull.cnr.cn/live/wxssxxwgb/playlist.m3u8"},
+  {"陕西交通广播","https://satellitepull.cnr.cn/live/wxsxxjtgb/playlist.m3u8"},
+  {"陕西经济广播","https://satellitepull.cnr.cn/live/wxsxxjjgb/playlist.m3u8"},
+  {"陕西农村广播","https://satellitepull.cnr.cn/live/wxsxxncgb/playlist.m3u8"},
+  {"陕西青春广播","https://satellitepull.cnr.cn/live/wxsxxqcgb/playlist.m3u8"},
+  {"陕西新闻广播","https://satellitepull.cnr.cn/live/wxsxxxwgb/playlist.m3u8"},
+  {"上海东方广播","https://satellitepull.cnr.cn/live/wx32dfgbdt/playlist.m3u8"},
+  {"深圳飞扬971","https://satellitepull.cnr.cn/live/wxszfy971/playlist.m3u8"},
+  {"深圳交通频率","https://satellitepull.cnr.cn/live/wxszjjpl/playlist.m3u8"},
+  {"深圳快乐1062(交通广播)","http://ls.qingting.fm/live/1272.m3u8"},
+  {"深圳私家车","https://satellitepull.cnr.cn/live/wxszsjcgb/playlist.m3u8"},
+  {"世界华声","https://sk.cri.cn/hxfh.m3u8"},
+  {"四川交通广播","https://satellitepull.cnr.cn/live/wxscjtgb/playlist.m3u8"},
+  {"四川民族广播 AM954","http://ls.qingting.fm/live/1115.m3u8"},
+  {"四川民族频率","https://satellitepull.cnr.cn/live/wxscmzgb/playlist.m3u8"},
+  {"太原交通广播 FM107","http://ls.qingting.fm/live/4900.m3u8"},
+  {"太原私家车Radio FM104.4","http://ls.qingting.fm/live/4018.m3u8"},
+  {"太原新闻广播 FM91.2","http://ls.qingting.fm/live/23873.m3u8"},
+  {"太原音乐广播 FM102.6","http://ls.qingting.fm/live/1185.m3u8"},
+  {"万盛旅游交通广播 FM92.2","http://ls.qingting.fm/live/5359760.m3u8"},
+  {"潍坊私家车广播 FM93.3","http://ls.qingting.fm/live/84511.m3u8"},
+  {"潍坊新闻广播 FM100.2","http://ls.qingting.fm/live/60358.m3u8"},
+  {"潍坊音乐优生活 FM90.8","http://ls.qingting.fm/live/4865.m3u8"},
+  {"温州交通广播 FM103.9","http://ls.qingting.fm/live/23863.m3u8"},
+  {"温州经济生活广播 FM88.8","http://ls.qingting.fm/live/23867.m3u8"},
+  {"温州绿色之声 FM93.8","http://ls.qingting.fm/live/1158.m3u8"},
+  {"温州私家车音乐广播 FM100.3","http://ls.qingting.fm/live/23865.m3u8"},
+  {"温州新闻广播 FM94.9","http://ls.qingting.fm/live/23861.m3u8"},
+  {"无锡交通广播 FM106.9","http://ls.qingting.fm/live/2780.m3u8"},
+  {"无锡新闻广播 FM93.7","http://ls.qingting.fm/live/2777.m3u8"},
+  {"西安交通广播 FM104.3","http://ls.qingting.fm/live/1611.m3u8"},
+  {"西安新闻广播 FM95.0","http://ls.qingting.fm/live/1610.m3u8"},
+  {"西安音乐广播 FM93.1","http://ls.qingting.fm/live/1612.m3u8"},
+  {"西藏藏语广播","https://satellitepull.cnr.cn/live/wxxzzygb/playlist.m3u8"},
+  {"西藏藏语康巴方言","https://satellitepull.cnr.cn/live/wxxzzykbfy/playlist.m3u8"},
+  {"西藏都市生活","https://satellitepull.cnr.cn/live/wxxzdsshgb/playlist.m3u8"},
+  {"西藏对外交通","https://satellitepull.cnr.cn/live/wxxzdwjtgb/playlist.m3u8"},
+  {"西藏汉语广播","https://satellitepull.cnr.cn/live/wxxzhygb/playlist.m3u8"},
+  {"西宁交通频率","http://ls.qingting.fm/live/3400408.m3u8"},
+  {"西宁新闻频率","http://ls.qingting.fm/live/3400403.m3u8"},
+  {"襄阳交通广播 FM89.0","http://ls.qingting.fm/live/1307.m3u8"},
+  {"襄阳音乐广播","http://ls.qingting.fm/live/5057.m3u8"},
+  {"新疆哈语广播","https://satellitepull.cnr.cn/live/wxxjhygb/playlist.m3u8"},
+  {"新疆交通广播","https://satellitepull.cnr.cn/live/wxxjjtgb/playlist.m3u8"},
+  {"新疆柯尔克孜语广播","https://satellitepull.cnr.cn/live/wxxjkygb/playlist.m3u8"},
+  {"新疆绿色广播","https://satellitepull.cnr.cn/live/wxxjlsgb/playlist.m3u8"},
+  {"新疆蒙语广播","https://satellitepull.cnr.cn/live/wxxjmygb/playlist.m3u8"},
+  {"新疆私家车广播 FM92.9","http://ls.qingting.fm/live/1909.m3u8"},
+  {"新疆私家车广播","https://satellitepull.cnr.cn/live/wxxjsjcgb/playlist.m3u8"},
+  {"新疆维吾尔语交通文艺广播","https://satellitepull.cnr.cn/live/wxxjwyjtwygb/playlist.m3u8"},
+  {"新疆维语综合广播","https://satellitepull.cnr.cn/live/wxxjwyzhgb/playlist.m3u8"},
+  {"新疆新闻广播","https://satellitepull.cnr.cn/live/wxxjxwgb/playlist.m3u8"},
+  {"延边文艺广播","https://satellitepull.cnr.cn/live/wxybwyshgb/playlist.m3u8"},
+  {"延边新闻广播","https://satellitepull.cnr.cn/live/wxybxwgb/playlist.m3u8"},
+  {"羊城交通广播","https://satellitepull.cnr.cn/live/wxgdycjtt/playlist.m3u8"},
+  {"阳泉交通广播","http://ls.qingting.fm/live/4592896.m3u8?aac"},
+  {"阳泉新闻综合广播","http://ls.qingting.fm/live/5876899.m3u8?aac"},
+  {"阳信人民广播电台 FM103.4","http://ls.qingting.fm/live/2915753.m3u8"},
+  {"岳阳交通广播 FM106.1","http://ls.qingting.fm/live/88931.m3u8"},
+  {"岳阳新闻综合广播","http://ls.qingting.fm/live/88933.m3u8"},
+  {"云南国际广播","https://satellitepull.cnr.cn/live/wxynsegb/playlist.m3u8"},
+  {"云南交通之声","https://satellitepull.cnr.cn/live/wxynjtgb/playlist.m3u8"},
+  {"云南经济广播","https://satellitepull.cnr.cn/live/wxynjjgb/playlist.m3u8"},
+  {"云南民族广播","https://satellitepull.cnr.cn/live/wxynmzgb/playlist.m3u8"},
+  {"云南新闻广播","https://satellitepull.cnr.cn/live/wxynxwgb/playlist.m3u8"},
+  {"长沙城市之声 FM101.7","http://ls.qingting.fm/live/4237.m3u8"},
+  {"长沙新闻广播 FM105.0","http://ls.qingting.fm/live/4877.m3u8"},
+  {"长治交通文艺广播 FM94.9","http://ls.qingting.fm/live/2669405.m3u8"},
+  {"长治新闻综合广播(幸福广播) FM94.3","http://ls.qingting.fm/live/2702863.m3u8"},
+  {"浙江财富广播 FM95","http://ls.qingting.fm/live/4519.m3u8"},
+  {"浙江城市之声","https://satellitepull.cnr.cn/live/wxzjcszs/playlist.m3u8"},
+  {"浙江动听(音乐调频) FM96.8","http://ls.qingting.fm/live/4866.m3u8"},
+  {"浙江交通之声","https://satellitepull.cnr.cn/live/wxzjjtgb/playlist.m3u8"},
+  {"浙江经济广播","https://satellitepull.cnr.cn/live/wxzjjjgb/playlist.m3u8"},
+  {"浙江民生996","https://satellitepull.cnr.cn/live/wxzjmsgb/playlist.m3u8"},
+  {"浙江女主播电台","https://satellitepull.cnr.cn/live/wxzj1045/playlist.m3u8"},
+  {"浙江悦动之音","https://satellitepull.cnr.cn/live/wxzj968/playlist.m3u8"},
+  {"郑州车道931","http://ls.qingting.fm/live/1221.m3u8"},
+  {"郑州活力944","http://ls.qingting.fm/live/4921.m3u8"},
+  {"郑州经典广播 FM107.9","http://ls.qingting.fm/live/1223.m3u8"},
+  {"郑州汽车广播 FM91.2","http://ls.qingting.fm/live/1211.m3u8"},
+  {"郑州私家车 FM91.8","http://ls.qingting.fm/live/1222.m3u8"},
+  {"郑州新闻广播 FM98.6","http://ls.qingting.fm/live/1220.m3u8"},
+  {"重庆都市广播 FM93.8","http://live.xmcdn.com/live/132/64.m3u8"},
+  {"重庆都市广播","https://satellitepull.cnr.cn/live/wxcqdsgb/playlist.m3u8"},
+  {"重庆经济广播","https://satellitepull.cnr.cn/live/wxcqjjgb/playlist.m3u8"},
+  {"重庆新闻广播","https://satellitepull.cnr.cn/live/wxcqxwgb/playlist.m3u8"},
+  {"珠海电台交通音乐875","http://ls.qingting.fm/live/1275.m3u8"},
+  {"珠海电台先锋951","http://ls.qingting.fm/live/1274.m3u8"},
+  {"珠江经济台","https://satellitepull.cnr.cn/live/wxgdzjjjt/playlist.m3u8"},
 };
 constexpr size_t kBuiltinStationCount = sizeof(kBuiltinStations) / sizeof(kBuiltinStations[0]);
 // END INLINED: built-in station catalog
@@ -1381,9 +1785,9 @@ constexpr IconStation kIconStations[] = {
   {"CNR乡村之声","https://radio.0472.org/?id=654","788606c69c5b1cc11405cb7b.jpg"},
   {"CNR南海之声","https://radio.0472.org/?id=664","9f73af224f3a35fa64ab7b32.jpg"},
   {"北京交通广播","http://ls.qingting.fm/live/336.m3u8","1603addca02ac5664142ed64.jpg"},
-  {"北京新闻广播","https://lhttp.qtfm.cn/live/339/64k.mp3","5b871d6c0e342ac97800183b.jpg"},
+  {"北京新闻广播","https://satellitepull.cnr.cn/live/wxbjxwgb/playlist.m3u8","5b871d6c0e342ac97800183b.jpg"},
   {"北京文艺广播","http://ls.qingting.fm/live/333.m3u8","8b0448bb6e937dfdcd75e307.jpg"},
-  {"北京城市广播","https://brtv-radiolive.rbc.cn/alive/fm1073.m3u8","3a95a52f9982e6340cb45ad2.jpg"},
+  {"北京城市广播","https://satellitepull.cnr.cn/live/wxbjcsfwgl/playlist.m3u8","3a95a52f9982e6340cb45ad2.jpg"},
   {"北京体育广播","https://brtv-radiolive.rbc.cn/alive/fm1025.m3u8","5954f4582d37d853c887a67d.jpg"},
   {"北京阳光调频","https://lhttp.qtfm.cn/live/5021739/64k.mp3","c65819c67d152630c6f1e2be.jpg"},
   {"北京经典调频","https://radio.0472.org/?id=1254","bef49f59ac1c14dcccf9e510.jpg"},
@@ -1393,48 +1797,48 @@ constexpr IconStation kIconStations[] = {
   {"CRI英语资讯","http://sk.cri.cn/am846.m3u8","2c363ecbf3566c5847a25fb3.jpg"},
   {"RTHK3","https://rthkradio3-live.akamaized.net/hls/live/2040079/radio3/master.m3u8","dc2e2b29d8b1a6919fff1e0d.jpg"},
   {"香港电台普通话台","https://rthkradiopth-live.akamaized.net/hls/live/2040082/radiopth/master.m3u8","3d55d6e3beef84e299c59a2d.jpg"},
-  {"湖南经济广播","https://radio.0472.org/?id=1056","3d0266b80490d0efb967f8e6.jpg"},
+  {"湖南经济广播","https://satellitepull.cnr.cn/live/wx32hunjjgb/playlist.m3u8","3d0266b80490d0efb967f8e6.jpg"},
   {"湖南新闻频道","https://radio.0472.org/?id=525","2f71407ae570bd62b36d0102.jpg"},
-  {"湖南潇湘之声","https://radio.0472.org/?id=526","808915ea385b3175746417a3.jpg"},
-  {"重庆文艺广播","http://satellitepull.cnr.cn/live/wxcqwygb/playlist.m3u8","48780aaa2006e266b3c10cfa.jpg"},
+  {"湖南潇湘之声","https://satellitepull.cnr.cn/live/wx32hunyygb/playlist.m3u8","808915ea385b3175746417a3.jpg"},
+  {"重庆文艺广播","https://satellitepull.cnr.cn/live/wxcqwygb/playlist.m3u8","48780aaa2006e266b3c10cfa.jpg"},
   {"上海故事广播","http://live.cooltv.top/tv/news1296.php?id=10","17bc1b0ceb1212a3df5f2069.jpg"},
   {"山西文艺广播","http://radiolive.sxrtv.com/live/wenyi/playlist.m3u8","fac333181a112b3469434019.jpg"},
-  {"江苏文艺广播","http://satellitepull.cnr.cn/live/wx32jswygb/playlist.m3u8","b9a7fda7bc703cdb3a06c2ac.jpg"},
-  {"江苏故事广播","http://satellitepull.cnr.cn/live/wx32jsgsgb/playlist.m3u8","d926dca78e0bba1605ce320f.jpg"},
+  {"江苏文艺广播","https://satellitepull.cnr.cn/live/wx32jswygb/playlist.m3u8","b9a7fda7bc703cdb3a06c2ac.jpg"},
+  {"江苏故事广播","https://satellitepull.cnr.cn/live/wx32jsgsgb/playlist.m3u8","d926dca78e0bba1605ce320f.jpg"},
   {"上海戏曲广播","https://radio.0472.org/?id=1314","e02dd076a74642fc945ecbce.jpg"},
   {"陕西故事广播","https://radio.0472.org/?id=1133","fb8c996d985e787d1d2c8fac.jpg"},
   {"北京音乐广播","http://ls.qingting.fm/live/332.m3u8","bc660c9cba38392c7d5bbfc3.jpg"},
-  {"湖南金鹰之声","https://radio.0472.org/?id=523","980ba8b80eba70a2b8438849.jpg"},
+  {"湖南金鹰之声","https://satellitepull.cnr.cn/live/wx32955/playlist.m3u8","980ba8b80eba70a2b8438849.jpg"},
   {"芒果时空音乐","https://radio.0472.org/?id=524","1050aa2ab4b2adf60493889a.jpg"},
-  {"湖南交通广播","https://radio.0472.org/?id=1059","0ef6098643e56f5cedcc3e69.jpg"},
+  {"湖南交通广播","https://satellitepull.cnr.cn/live/wx32hunjtgb/playlist.m3u8","0ef6098643e56f5cedcc3e69.jpg"},
   {"湖南音乐之声","https://radio.0472.org/?id=1060","39c953da121e08cbd334688a.jpg"},
   {"长沙交通广播","https://radio.0472.org/?id=1061","9cdbef7ee5b4a26ff240f668.jpg"},
   {"长沙音乐广播","https://radio.0472.org/?id=1531","bc42f66ac5130cad2d006d4a.jpg"},
-  {"广东音乐之声","http://ls.qingting.fm/live/1260.m3u8","872c85048e00e9edf84679e7.jpg"},
-  {"江西音乐广播","http://satellitepull.cnr.cn/live/wx32jiangxyygb/playlist.m3u8","2ee3a75bca5f658140643f87.jpg"},
-  {"河北音乐广播","https://radio.0472.org/?id=381","f2414fa4ae8f72f7038c8f25.jpg"},
+  {"广东音乐之声","https://satellitepull.cnr.cn/live/wxgdyyzs/playlist.m3u8","872c85048e00e9edf84679e7.jpg"},
+  {"江西音乐广播","https://satellitepull.cnr.cn/live/wx32jiangxyygb/playlist.m3u8","2ee3a75bca5f658140643f87.jpg"},
+  {"河北音乐广播","https://satellitepull.cnr.cn/live/wxhebyygb/playlist.m3u8","f2414fa4ae8f72f7038c8f25.jpg"},
   {"深圳音乐频率","https://radio.0472.org/?id=498","5f81dd29eeefd78aafaa7940.jpg"},
   {"南京音乐广播","http://hls.njgb.com/live_hls/4/playlist.m3u8","9294af1b36817696e476acb2.jpg"},
-  {"江苏音乐广播","https://radio.0472.org/?id=415","56739bdfc3c8817b84a804a4.jpg"},
+  {"江苏音乐广播","https://satellitepull.cnr.cn/live/wx32jsyygb/playlist.m3u8","56739bdfc3c8817b84a804a4.jpg"},
   {"河北汽车音乐","https://radio.pull.hebtv.com/live/hebqcyy.m3u8","e28da11ec2608ad62f2fd308.jpg"},
-  {"重庆音乐广播","https://radio.0472.org/?id=372","6bc81b5586d6a0572248b112.jpg"},
+  {"重庆音乐广播","https://satellitepull.cnr.cn/live/wxcqyygb/playlist.m3u8","6bc81b5586d6a0572248b112.jpg"},
   {"龙江音乐广播","https://radio.0472.org/?id=552","50f09b8c2dcdfeb55bfe09e5.jpg"},
   {"内蒙音乐之声","https://radio.0472.org/?id=572","60c3e570e8b2340d0beff10f.jpg"},
-  {"宁夏音乐广播","https://radio.0472.org/?id=1701","bb5c62227958fa26cc071e3e.jpg"},
-  {"陕西音乐广播","https://radio.0472.org/?id=561","74b59ccf0f982f3b1710aa09.jpg"},
+  {"宁夏音乐广播","https://satellitepull.cnr.cn/live/wxnxyygb/playlist.m3u8","bb5c62227958fa26cc071e3e.jpg"},
+  {"陕西音乐广播","https://satellitepull.cnr.cn/live/wxsxxyygb/playlist.m3u8","74b59ccf0f982f3b1710aa09.jpg"},
   {"青海音乐广播","https://radio.0472.org/?id=616","8ff1c18ce7b14b75ee39bbd4.jpg"},
   {"山西音乐广播","https://radio.0472.org/?id=637","492e8d9029cccef597d0add3.jpg"},
-  {"山东音乐广播","https://radio.0472.org/?id=702","6ea194b3b461505fc6406f1c.jpg"},
-  {"安徽音乐广播","https://radio.0472.org/?id=601","abf2e98edc9feb2d985476fb.jpg"},
+  {"山东音乐广播","https://satellitepull.cnr.cn/live/wxsdyygb/playlist.m3u8","6ea194b3b461505fc6406f1c.jpg"},
+  {"安徽音乐广播","https://satellitepull.cnr.cn/live/wxahyygb/playlist.m3u8","abf2e98edc9feb2d985476fb.jpg"},
   {"江苏经典流行","http://satellitepull.cnr.cn/live/wx32jsjdlxyy/playlist.m3u8","38fc875f711411b135042fa9.jpg"},
   {"浙江音乐调频","https://radio.0472.org/?id=928","d7737794daf2ebc945c94e31.jpg"},
   {"厦门音乐广播","https://radio.0472.org/?id=1897","cb94d50dad714abbab21922e.jpg"},
-  {"云南音乐广播","https://radio.0472.org/?id=592","d7722296ba934732eec00c2b.jpg"},
+  {"云南音乐广播","https://satellitepull.cnr.cn/live/wxynyygb/playlist.m3u8","d7722296ba934732eec00c2b.jpg"},
   {"广西音乐台","https://radio.0472.org/?id=590","e2561d1fb54fd9b3ce2a345b.jpg"},
-  {"贵州音乐广播","https://radio.0472.org/?id=435","0b0497b093c9485f47a572bf.jpg"},
+  {"贵州音乐广播","https://satellitepull.cnr.cn/live/wx32gzyygb/playlist.m3u8","0b0497b093c9485f47a572bf.jpg"},
   {"新疆音乐广播","https://radio.0472.org/?id=1158","4166e1b2d9af8601c24f7e9e.jpg"},
-  {"海南音乐广播","https://radio.0472.org/?id=543","dc8cd36bb89b027e71bd4ff0.jpg"},
-  {"河北文艺广播","http://satellitepull.cnr.cn/live/wxhebwygb/playlist.m3u8","c6fec9976f72dac4563b488b.jpg"},
+  {"海南音乐广播","https://satellitepull.cnr.cn/live/wxhainyygb/playlist.m3u8","dc8cd36bb89b027e71bd4ff0.jpg"},
+  {"河北文艺广播","https://satellitepull.cnr.cn/live/wxhebwygb/playlist.m3u8","c6fec9976f72dac4563b488b.jpg"},
   {"RFI 法广中文","https://rfienchinois64k.ice.infomaniak.ch/rfienchinois-64.mp3","58c61f222819811ba395aa68.jpg"},
   {"台湾中广新闻网","https://n03.rcs.revma.com/78fm9wyy2tzuv","b49926306dbe24feb8b39697.jpg"},
   {"BBC World Service","http://as-hls-ww-live.akamaized.net/pool_87948813/live/ww/bbc_world_service/bbc_world_service.isml/bbc_world_service-audio%3d96000.norewind.m3u8","5e495b597e158b59b5c81edc.jpg"},
@@ -1465,7 +1869,6 @@ constexpr IconStation kIconStations[] = {
   {"BBC Radio 5 Live","http://as-hls-ww-live.akamaized.net/pool_89021708/live/ww/bbc_radio_five_live/bbc_radio_five_live.isml/bbc_radio_five_live-audio%3d96000.norewind.m3u8","879bff327cb6aed761a5bcff.jpg"},
   {"BBC Radio 6 Music","http://as-hls-ww-live.akamaized.net/pool_81827798/live/ww/bbc_6music/bbc_6music.isml/bbc_6music-audio%3d96000.norewind.m3u8","b653593dee058ef1dd2af51b.jpg"},
   {"BBC Radio Asian Network","http://as-hls-ww-live.akamaized.net/pool_22108647/live/ww/bbc_asian_network/bbc_asian_network.isml/bbc_asian_network-audio%3d96000.norewind.m3u8","84cbaede9bd7ef503448eff3.jpg"},
-  {"凤凰卫视音频","https://playtv-live.ifeng.com/live/06OLEEWQKN4_audio.m3u8","41b33863895364f62d65c44a.jpg"},
   {"凤凰卫视中文台","https://playtv-live.ifeng.com/live/06OLEGEGM4G_audio.m3u8","41b33863895364f62d65c44a.jpg"},
   {"CCTV-13 新闻伴音","https://piccpndali.v.myalicdn.com/audio/cctv13_2.m3u8","ae26be8d7a67c613ccdb4d61.jpg"},
   {"上海新闻广播","https://satellitepull.cnr.cn/live/wx32shrmgb/playlist.m3u8","1f2c6a03b8bc962ca7c11f4e.jpg"},
@@ -1479,6 +1882,88 @@ constexpr IconStation kIconStations[] = {
   {"台湾中央广播电台","https://streamak0138.akamaized.net/live0138lh-mbm9/_definst_/rti3/chunklist.m3u8","c1096c41004d6a7dff7481ab.jpg"},
   {"台湾 News98","https://n17a-eu.rcs.revma.com/pntx1639ntzuv","bca58bbef5d0d78637bf8629.jpg"},
   {"马来西亚 Ai FM","https://playerservices.streamtheworld.com/api/livestream-redirect/AI_FMAAC_SC","44ecfb22282abc57067d73ed.jpg"},
+  {"China Plus Radio","https://sk.cri.cn/am846.m3u8","0dca1764c310c21abdd67767.png"},
+  {"安徽交通广播","https://satellitepull.cnr.cn/live/wxahjtgb/playlist.m3u8","7e296ba226326817213b385c.png"},
+  {"安徽经济广播","https://satellitepull.cnr.cn/live/wxahjjgb/playlist.m3u8","ffa4c225c1e6941680cd4760.png"},
+  {"安徽戏曲广播","https://satellitepull.cnr.cn/live/wxahxqgb/playlist.m3u8","c0c3154f78441562d88dae48.png"},
+  {"安徽之声","https://satellitepull.cnr.cn/live/wxahxxgb/playlist.m3u8","f2fdfc5625d9fdaaab095ccd.png"},
+  {"楚天交通广播","https://satellitepull.cnr.cn/live/wx32hubctjtgb/playlist.m3u8","d57d777eaac99c751f986b9c.png"},
+  {"第一财经广播","https://satellitepull.cnr.cn/live/wx32dycjgb/playlist.m3u8","e2bf8b498c6db2f70257a855.png"},
+  {"福建东南广播","https://satellitepull.cnr.cn/live/wx32fjdngb/playlist.m3u8","eb997e58a8428cb1fcbc8e7b.png"},
+  {"福建都市广播","https://satellitepull.cnr.cn/live/wx32fjdndsgb/playlist.m3u8","c16eea6f48d1502faff7e6bf.png"},
+  {"福建交通广播","https://satellitepull.cnr.cn/live/wx32fjdnjtgb/playlist.m3u8","f1973e2be0b0e987e44f56e3.png"},
+  {"福建新闻广播","https://satellitepull.cnr.cn/live/wx32fjxwgb/playlist.m3u8","682beda6790c58d07e5a27c5.png"},
+  {"甘肃都市调频","https://satellitepull.cnr.cn/live/wxgsdstb/playlist.m3u8","5a7a880ad4294c252c211c58.png"},
+  {"甘肃交通广播","https://satellitepull.cnr.cn/live/wxgsjtgb/playlist.m3u8","889ba573ef07b89926e3f6c7.png"},
+  {"甘肃农村广播","https://satellitepull.cnr.cn/live/wxgsncgb/playlist.m3u8","204ce336aa622f144721b0c4.png"},
+  {"甘肃青春调频","https://satellitepull.cnr.cn/live/wxgsqcgb/playlist.m3u8","8ca4d185f4d8f13773c26701.png"},
+  {"广东城市之声","https://satellitepull.cnr.cn/live/wxgdcszs/playlist.m3u8","7b9cd86297d6d4ee012d90e5.png"},
+  {"广东股市广播","https://satellitepull.cnr.cn/live/wxgdgsgb/playlist.m3u8","3d550087ca21c6b565f1c2b7.png"},
+  {"广东南粤之声","https://satellitepull.cnr.cn/live/wxnyzs/playlist.m3u8","660320b45fe6de592e3f23ed.png"},
+  {"广东文体广播","https://satellitepull.cnr.cn/live/wxgdwtgb/playlist.m3u8","84f70d394e5ec0413385b9f8.png"},
+  {"广西交通广播","https://satellitepull.cnr.cn/live/wx32gxjtgb/playlist.m3u8","e4abfad84d92287d0f52a1fd.png"},
+  {"贵州都市广播","https://satellitepull.cnr.cn/live/wx32gzqcgb/playlist.m3u8","8822521b7eaddb0a52ff2ce2.png"},
+  {"贵州故事广播","https://satellitepull.cnr.cn/live/wx32gzgsgb/playlist.m3u8","ff4d8eba10f67efa2a881aef.png"},
+  {"贵州经济广播","https://satellitepull.cnr.cn/live/wx32gzjjgb/playlist.m3u8","9d0a338fc2e3a236af598d22.png"},
+  {"贵州旅游广播","https://satellitepull.cnr.cn/live/wx32gzlygb/playlist.m3u8","835ac28044a3151e3a3ad587.png"},
+  {"贵州综合广播","https://satellitepull.cnr.cn/live/wx32gzwxwzhgb/playlist.m3u8","c727384837e981827455711a.png"},
+  {"海口音乐广播","http://ls.qingting.fm/live/23859.m3u8","de88cd51e59aa40e537ed80d.png"},
+  {"海南交通广播","https://satellitepull.cnr.cn/live/wxhainjtgb/playlist.m3u8","23ef65cdc74518fd5b1a83c9.png"},
+  {"海南新闻广播","https://satellitepull.cnr.cn/live/wxhainxwgb/playlist.m3u8","abb4d3ca1668777527a54990.png"},
+  {"河北交通广播","https://satellitepull.cnr.cn/live/wxhebjtgb/playlist.m3u8","39af8ddfa2a9a40cfe6afa7e.png"},
+  {"河北生活广播","https://satellitepull.cnr.cn/live/wxhebshgb/playlist.m3u8","e10c400239a312392fb7667e.png"},
+  {"河北综合广播","https://satellitepull.cnr.cn/live/wxhebzhgb/playlist.m3u8","e7ecb9bbddb77f202df85369.png"},
+  {"河南交通广播","https://stream.hndt.com/live/jiaotong/playlist.m3u8","30854eac2f4f2b2eb70d3e7a.png"},
+  {"河南教育广播","https://stream.hndt.com/live/jiaoyu/playlist.m3u8","e95bd5fe9ea1ddf3532108d1.jpg"},
+  {"河南经济广播","https://satellitepull.cnr.cn/live/wxhnjjgb/playlist.m3u8","cf9dfedc98761992c63471f3.png"},
+  {"河南戏曲广播","https://satellitepull.cnr.cn/live/wxhnxqgb/playlist.m3u8","46e8949e4647b24039c28f1d.png"},
+  {"河南新闻广播","https://satellitepull.cnr.cn/live/wxhnxwgb/playlist.m3u8","a116bd46538651c417aff86b.png"},
+  {"河南音乐广播","https://stream.hndt.com/live/yinyue/playlist.m3u8","091d05d2505dfc43704a75cf.png"},
+  {"黑龙江高校广播","https://satellitepull.cnr.cn/live/wx32hljgxgb/playlist.m3u8","d2a26f533e0e3a5a0fc997f0.png"},
+  {"黑龙江乡村广播","https://satellitepull.cnr.cn/live/wx32hljxcgb/playlist.m3u8","51cdd434c15f9131e07203b8.png"},
+  {"黑龙江新闻广播","https://satellitepull.cnr.cn/live/wx32hljxwgb/playlist.m3u8","b62ef9454727ceca135c0de3.png"},
+  {"黑龙江音乐广播","https://satellitepull.cnr.cn/live/wx32hljyygb/playlist.m3u8","43b705783bc6c45099dab50e.png"},
+  {"湖北之声","https://satellitepull.cnr.cn/live/wx32hubzsgb/playlist.m3u8","112850f07d7d051be319f6a3.png"},
+  {"吉林交通广播","https://satellitepull.cnr.cn/live/wxjljtgb/playlist.m3u8","79e9d1edef48071c54a138b2.png"},
+  {"吉林经济广播","https://satellitepull.cnr.cn/live/wxjljjgb/playlist.m3u8","abc4df0fcc753000d02f651f.png"},
+  {"吉林乡村广播","https://satellitepull.cnr.cn/live/wxjlxcgb/playlist.m3u8","1875a2601b83ff5b5ed7c500.png"},
+  {"江苏财经广播","https://satellitepull.cnr.cn/live/wx32jscjgb/playlist.m3u8","3bde4554a1068a3d45dcf938.png"},
+  {"江苏健康广播","https://satellitepull.cnr.cn/live/wx32jsjkgb/playlist.m3u8","2f1b58b3b96b65b645ef4731.png"},
+  {"江苏交通广播","https://satellitepull.cnr.cn/live/wx32jsjtgb/playlist.m3u8","01d4fb1a44762d800d9bac9b.png"},
+  {"江西交通广播","https://satellitepull.cnr.cn/live/wx32jiangxjtgb/playlist.m3u8","7dbe587338004fe65635cb5f.png"},
+  {"江西新闻广播","https://satellitepull.cnr.cn/live/wx32jiangxxwgb/playlist.m3u8","63c9095f58a0c2ea74dc8f41.png"},
+  {"辽宁交通广播","https://satellitepull.cnr.cn/live/wxlnjtgb/playlist.m3u8","782da3822a61d7dc075cc785.png"},
+  {"辽宁经济广播","https://satellitepull.cnr.cn/live/wxlnjjtb/playlist.m3u8","711021bee1f8ba35ec86d1d2.png"},
+  {"辽宁乡村广播","https://satellitepull.cnr.cn/live/wxlnxcgb/playlist.m3u8","8e8738440bcac2f31403b8c0.png"},
+  {"辽宁之声","https://satellitepull.cnr.cn/live/wxlnzhgb/playlist.m3u8","be503825cfcedb7692f9d7c8.png"},
+  {"南方生活广播","https://satellitepull.cnr.cn/live/wxgdnfshgb/playlist.m3u8","1de2b0ac38fe768857911599.png"},
+  {"内蒙古音乐之声","https://satellitepull.cnr.cn/live/wx32nmgyygb/playlist.m3u8","957223a821c3d60a46dce837.png"},
+  {"宁夏新闻广播","https://satellitepull.cnr.cn/live/wxnxxwgb/playlist.m3u8","b7a734c34bd5156dc3a4272f.png"},
+  {"青海经济广播","https://satellitepull.cnr.cn/live/wx32qhjjgb/playlist.m3u8","6009a93a8765a5d847b9de9b.png"},
+  {"山东交通广播","https://satellitepull.cnr.cn/live/wxsdjtgb/playlist.m3u8","7634e41027feefedf3646d07.png"},
+  {"山东经济广播","https://satellitepull.cnr.cn/live/wxsdjjgb/playlist.m3u8","334048a540ba17a5bc589501.png"},
+  {"山东文艺广播","https://satellitepull.cnr.cn/live/wxsdwyssgb/playlist.m3u8","4250e48ac01afdab162ad3fd.png"},
+  {"山东乡村广播","https://satellitepull.cnr.cn/live/wxsdxcgb/playlist.m3u8","974ae4d229bf14de38f5ee3e.png"},
+  {"山西综合广播","https://satellitepull.cnr.cn/live/wxssxxwgb/playlist.m3u8","f0cf89b9851886c38d85f31f.png"},
+  {"陕西交通广播","https://satellitepull.cnr.cn/live/wxsxxjtgb/playlist.m3u8","732057e3c9e671850e13650c.png"},
+  {"陕西经济广播","https://satellitepull.cnr.cn/live/wxsxxjjgb/playlist.m3u8","99f586443259bea5fc1f3426.png"},
+  {"陕西农村广播","https://satellitepull.cnr.cn/live/wxsxxncgb/playlist.m3u8","572748b00ee884f54d677b99.png"},
+  {"陕西新闻广播","https://satellitepull.cnr.cn/live/wxsxxxwgb/playlist.m3u8","457884fceb78745ad34ca424.png"},
+  {"深圳飞扬971","https://satellitepull.cnr.cn/live/wxszfy971/playlist.m3u8","8981fc88774f27a99b7306f2.png"},
+  {"世界华声","https://sk.cri.cn/hxfh.m3u8","833ff3eccd3144c7f90a9876.png"},
+  {"四川交通广播","https://satellitepull.cnr.cn/live/wxscjtgb/playlist.m3u8","1bac8364cf9bee6c8d2ae3a1.png"},
+  {"延边新闻广播","https://satellitepull.cnr.cn/live/wxybxwgb/playlist.m3u8","7bcf5fad9254b1cf8e84b8bf.png"},
+  {"羊城交通广播","https://satellitepull.cnr.cn/live/wxgdycjtt/playlist.m3u8","0865b0f1445e452f18d72e0f.png"},
+  {"云南国际广播","https://satellitepull.cnr.cn/live/wxynsegb/playlist.m3u8","62953dbba00200d1aa80390d.png"},
+  {"云南交通之声","https://satellitepull.cnr.cn/live/wxynjtgb/playlist.m3u8","ed0de72a1874d56ec9619b52.png"},
+  {"云南经济广播","https://satellitepull.cnr.cn/live/wxynjjgb/playlist.m3u8","e3e60a7c6650c5a7fd918de0.png"},
+  {"云南民族广播","https://satellitepull.cnr.cn/live/wxynmzgb/playlist.m3u8","1168b56af82fbc5c4d6ea446.png"},
+  {"云南新闻广播","https://satellitepull.cnr.cn/live/wxynxwgb/playlist.m3u8","19fb2c4460a040aa9da10bb9.png"},
+  {"浙江城市之声","https://satellitepull.cnr.cn/live/wxzjcszs/playlist.m3u8","e8ff759d5c8057467e461cd2.png"},
+  {"浙江交通之声","https://satellitepull.cnr.cn/live/wxzjjtgb/playlist.m3u8","dd0827c15b3a1fd8792fd3bc.png"},
+  {"浙江经济广播","https://satellitepull.cnr.cn/live/wxzjjjgb/playlist.m3u8","f5c4200b8137e2ba5e13bf1d.png"},
+  {"重庆都市广播","https://satellitepull.cnr.cn/live/wxcqdsgb/playlist.m3u8","4c899cec8870e4712ba8ae4f.png"},
+  {"重庆经济广播","https://satellitepull.cnr.cn/live/wxcqjjgb/playlist.m3u8","046caf2e0906211424c28070.png"},
 };
 constexpr size_t kIconStationCount=sizeof(kIconStations)/sizeof(kIconStations[0]);
 // END INLINED: station icon catalog
@@ -1512,9 +1997,11 @@ constexpr size_t kLegacyBuiltinStationCount = 100;
 // Bump the import markers after the resource image migration so devices whose
 // LittleFS playlist was replaced rebuild every missing bundled station once.
 constexpr char kLegacyBuiltinCatalogKey[] = "builtin_100_v2";
-constexpr char kNewsStationPackKey[] = "news_pack_v2";
-constexpr char kRegionSortKey[] = "region_sort_v3";
-static_assert(kBuiltinStationCount == 113,
+constexpr char kExpandedStationPackKey[] = "station_pack_v4";
+constexpr char kRegionSortKey[] = "region_sort_v5";
+constexpr char kGroupOrderKey[] = "group_order_v1";
+constexpr char kGroupLayoutKey[] = "group_layout_v1";
+static_assert(kBuiltinStationCount == 397,
               "Update the incremental station-pack boundary when the catalog changes.");
 
 char adminPassword[64] = {};
@@ -1817,7 +2304,7 @@ void updateStatusLed(bool force = false) {
 
 void enrichStationIcons() {
   bool changed = false;
-  for (uint8_t stationIndex = 0; stationIndex < stationCount; ++stationIndex) {
+  for (uint16_t stationIndex = 0; stationIndex < stationCount; ++stationIndex) {
     for (size_t iconIndex = 0; iconIndex < kIconStationCount; ++iconIndex) {
       const IconStation &icon = kIconStations[iconIndex];
       if (strcmp(stations[stationIndex].url, icon.url) != 0) continue;
@@ -1833,7 +2320,7 @@ void enrichStationIcons() {
 }
 
 bool stationAlreadyStored(const BuiltinStation &candidate) {
-  for (uint8_t stored = 0; stored < stationCount; ++stored) {
+  for (uint16_t stored = 0; stored < stationCount; ++stored) {
     if (strcmp(stations[stored].url, candidate.url) == 0 ||
         strcmp(stations[stored].name, candidate.name) == 0) return true;
   }
@@ -1877,10 +2364,10 @@ void importBuiltinStations() {
   }
 }
 
-bool importNewsStationPack() {
+bool importExpandedStationPack() {
   Preferences importPreferences;
   importPreferences.begin("catalog", false);
-  const bool imported = importPreferences.getBool(kNewsStationPackKey, false);
+  const bool imported = importPreferences.getBool(kExpandedStationPackKey, false);
   importPreferences.end();
   if (imported) return false;
 
@@ -1889,7 +2376,7 @@ bool importNewsStationPack() {
                                           kBuiltinStationCount, complete);
   if (complete) {
     importPreferences.begin("catalog", false);
-    importPreferences.putBool(kNewsStationPackKey, true);
+    importPreferences.putBool(kExpandedStationPackKey, true);
     importPreferences.end();
   }
   return changed;
@@ -1929,7 +2416,7 @@ void migrateStationCatalog() {
   };
 
   bool changed = false;
-  for (uint8_t index = 0; index < stationCount; ++index) {
+  for (uint16_t index = 0; index < stationCount; ++index) {
     for (const StationMigration &migration : migrations) {
       if (strcmp(stations[index].url, migration.oldUrl) == 0) {
         if (strcmp(stations[index].url, migration.newUrl) != 0) {
@@ -1954,18 +2441,49 @@ struct RegionPrefix {
 };
 
 constexpr RegionPrefix kRegionOrder[] = {
-  {"CNR", 0}, {"CRI", 0}, {"CCTV", 0}, {"凤凰", 0},
-  {"北京", 1}, {"天津", 2}, {"上海", 3}, {"重庆", 4},
-  {"河北", 5}, {"山西", 6}, {"内蒙", 7}, {"辽宁", 8},
-  {"吉林", 9}, {"黑龙江", 10}, {"龙江", 10},
-  {"江苏", 11}, {"南京", 11}, {"浙江", 12}, {"安徽", 13},
-  {"福建", 14}, {"厦门", 14}, {"江西", 15}, {"山东", 16},
-  {"河南", 17}, {"湖北", 18}, {"湖南", 19}, {"长沙", 19}, {"芒果", 19},
-  {"广东", 20}, {"深圳", 20}, {"广西", 21}, {"海南", 22},
-  {"四川", 23}, {"贵州", 24}, {"云南", 25}, {"西藏", 26},
-  {"陕西", 27}, {"甘肃", 28}, {"青海", 29}, {"宁夏", 30},
-  {"新疆", 31}, {"香港", 32}, {"RTHK", 32}, {"澳门", 33}, {"台湾", 34},
-  {"新加坡", 35}, {"马来西亚", 36}, {"RFI", 37},
+  // Requested primary groups: central, Shanghai, Jiangsu, Anhui, Zhejiang,
+  // Beijing, foreign stations, then the remaining provincial regions.
+  {"CNR", 0}, {"CRI", 0}, {"CCTV", 0}, {"China Plus", 0},
+  {"华语环球", 0}, {"世界华声", 0},
+  {"上海", 1}, {"第一财经", 1}, {"东广", 1},
+  {"江苏", 2}, {"南京", 2}, {"苏州", 2}, {"无锡", 2},
+  {"常州", 2}, {"南通", 2}, {"镇江", 2}, {"扬州", 2},
+  {"安徽", 3}, {"合肥", 3},
+  {"浙江", 4}, {"杭州", 4}, {"宁波", 4}, {"温州", 4},
+  {"湖州", 4}, {"绍兴", 4},
+  {"北京", 5},
+  {"BBC", 6}, {"CNN", 6}, {"CNA", 6}, {"GB News", 6},
+  {"LBC", 6}, {"Times Radio", 6}, {"Talk Radio", 6},
+  {"NPR", 6}, {"ABC News", 6}, {"Newstalk", 6}, {"Power FM", 6},
+  {"Classic FM", 6}, {"MSNBC", 6}, {"Capital FM", 6},
+  {"Class FM", 6}, {"Hao FM", 6}, {"Gold FM", 6},
+  {"Money FM", 6}, {"Yes FM", 6}, {"Kiss FM", 6},
+  {"RFI", 6}, {"新加坡", 6}, {"马来西亚", 6},
+  {"天津", 20}, {"重庆", 21}, {"巴渝", 21}, {"万盛", 21},
+  {"河北", 22}, {"保定", 22}, {"山西", 23}, {"太原", 23},
+  {"阳泉", 23}, {"长治", 23},
+  {"内蒙", 24}, {"呼和浩特", 24}, {"呼伦贝尔", 24},
+  {"蒙古语", 24}, {"辽宁", 25}, {"沈阳", 25}, {"吉林", 26},
+  {"长春", 26}, {"延边", 26}, {"黑龙江", 27}, {"龙江", 27}, {"龙广", 27},
+  {"福建", 28}, {"厦门", 28}, {"福州", 28}, {"海峡", 28},
+  {"江西", 29}, {"九江", 29}, {"山东", 30}, {"济南", 30},
+  {"青岛", 30}, {"潍坊", 30}, {"滨州", 30}, {"阳信", 30},
+  {"河南", 31}, {"郑州", 31}, {"鹤壁", 31},
+  {"湖北", 32}, {"武汉", 32}, {"楚天", 32}, {"襄阳", 32},
+  {"湖南", 33}, {"长沙", 33}, {"芒果", 33}, {"郴州", 33},
+  {"衡阳", 33}, {"岳阳", 33}, {"益阳", 33}, {"邵阳", 33},
+  {"广东", 34}, {"广州", 34}, {"深圳", 34}, {"珠海", 34},
+  {"东莞", 34}, {"佛山", 34}, {"惠州", 34}, {"梅州", 34},
+  {"羊城", 34}, {"珠江", 34}, {"花都", 34}, {"西江", 34},
+  {"鹤山", 34}, {"南方", 34},
+  {"广西", 35}, {"南宁", 35}, {"海南", 36}, {"海口", 36},
+  {"四川", 37}, {"成都", 37}, {"绵阳", 37},
+  {"贵州", 38}, {"黔西南", 38}, {"云南", 39}, {"昆明", 39},
+  {"保山", 39}, {"西藏", 40}, {"拉萨", 40},
+  {"陕西", 41}, {"西安", 41}, {"甘肃", 42}, {"青海", 43},
+  {"西宁", 43}, {"宁夏", 44}, {"新疆", 45}, {"兵团", 45},
+  {"香港", 46}, {"RTHK", 46}, {"凤凰", 46}, {"澳门", 47},
+  {"台湾", 48}, {"BCC", 48}, {"飞碟", 48},
 };
 
 uint8_t stationRegionOrder(const char *name) {
@@ -1975,43 +2493,218 @@ uint8_t stationRegionOrder(const char *name) {
   return 250;
 }
 
-bool stationComesAfter(const Station &left, const Station &right) {
-  const bool leftIsPhoenix = strcmp(left.name, "凤凰卫视音频") == 0;
-  const bool rightIsPhoenix = strcmp(right.name, "凤凰卫视音频") == 0;
-  if (leftIsPhoenix != rightIsPhoenix) return !leftIsPhoenix;
-  const uint8_t leftRegion = stationRegionOrder(left.name);
-  const uint8_t rightRegion = stationRegionOrder(right.name);
-  if (leftRegion != rightRegion) return leftRegion > rightRegion;
-  return strcmp(left.name, right.name) > 0;
+const char *stationGroupName(const char *name) {
+  return stationGroupNameById(stationRegionOrder(name));
 }
 
-void sortStationsByRegionOnce(bool forceSort = false) {
-  Preferences catalogPreferences;
-  catalogPreferences.begin("catalog", false);
-  const bool alreadySorted = catalogPreferences.getBool(kRegionSortKey, false);
-  catalogPreferences.end();
-  if (alreadySorted && !forceSort) return;
+const char *stationGroupNameById(uint8_t id) {
+  switch (id) {
+    case 0: return "中央电台";
+    case 1: return "上海";
+    case 2: return "江苏";
+    case 3: return "安徽";
+    case 4: return "浙江";
+    case 5: return "北京";
+    case 6: return "外国电台";
+    case 20: return "天津";
+    case 21: return "重庆";
+    case 22: return "河北";
+    case 23: return "山西";
+    case 24: return "内蒙古";
+    case 25: return "辽宁";
+    case 26: return "吉林";
+    case 27: return "黑龙江";
+    case 28: return "福建";
+    case 29: return "江西";
+    case 30: return "山东";
+    case 31: return "河南";
+    case 32: return "湖北";
+    case 33: return "湖南";
+    case 34: return "广东";
+    case 35: return "广西";
+    case 36: return "海南";
+    case 37: return "四川";
+    case 38: return "贵州";
+    case 39: return "云南";
+    case 40: return "西藏";
+    case 41: return "陕西";
+    case 42: return "甘肃";
+    case 43: return "青海";
+    case 44: return "宁夏";
+    case 45: return "新疆及兵团";
+    case 46: return "香港";
+    case 47: return "澳门";
+    case 48: return "台湾";
+    default: return "其他";
+  }
+}
 
-  uint8_t trackedSelection = selectedStation;
-  for (uint8_t index = 1; index < stationCount; ++index) {
-    Station current = stations[index];
-    const bool movingSelected = trackedSelection == index;
-    int position = index - 1;
-    while (position >= 0 && stationComesAfter(stations[position], current)) {
-      stations[position + 1] = stations[position];
-      if (!movingSelected && trackedSelection == position) trackedSelection = position + 1;
-      --position;
+bool isKnownStationGroup(uint8_t id) {
+  for (uint8_t known : kDefaultStationGroupOrder) {
+    if (known == id) return true;
+  }
+  return false;
+}
+
+void resetStationGroupOrderInMemory() {
+  memcpy(stationGroupOrder, kDefaultStationGroupOrder,
+         sizeof(kDefaultStationGroupOrder));
+  stationGroupOrderCount = kStationGroupCapacity;
+}
+
+uint8_t stationGroupOrderIndex(uint8_t id) {
+  for (uint8_t index = 0; index < stationGroupOrderCount; ++index) {
+    if (stationGroupOrder[index] == id) return index;
+  }
+  return stationGroupOrderCount;
+}
+
+bool persistStationGroupOrder() {
+  bool present[256] = {};
+  for (uint16_t index = 0; index < stationCount; ++index) {
+    present[stationRegionOrder(stations[index].name)] = true;
+  }
+  uint8_t compact[kStationGroupCapacity] = {};
+  uint8_t compactCount = 0;
+  for (uint8_t index = 0; index < stationGroupOrderCount; ++index) {
+    if (present[stationGroupOrder[index]]) {
+      compact[compactCount++] = stationGroupOrder[index];
     }
-    stations[position + 1] = current;
-    if (movingSelected) trackedSelection = position + 1;
   }
-  selectedStation = trackedSelection;
+  Preferences catalogPreferences;
+  if (!catalogPreferences.begin("catalog", false)) {
+    serialLogPrintln(kSerialLogSystemBit,
+                     "ERROR: Could not open station group order storage.");
+    return false;
+  }
+  // These one-byte migration markers are obsolete once a valid group-order
+  // blob exists. Removing them also releases NVS entries on tightly packed
+  // devices upgraded through several catalog versions.
+  catalogPreferences.remove(kRegionSortKey);
+  catalogPreferences.remove(kGroupLayoutKey);
+  size_t written = compactCount > 0
+                       ? catalogPreferences.putBytes(kGroupOrderKey, compact,
+                                                     compactCount)
+                       : 0;
+  if (compactCount > 0 && written != compactCount) {
+    // Updating an existing blob can temporarily require both the old and new
+    // records. Erase it and retry so upgrades with nearly full NVS still have
+    // enough room for this small order list. The caller restores the previous
+    // order if this retry also fails.
+    catalogPreferences.remove(kGroupOrderKey);
+    written = catalogPreferences.putBytes(kGroupOrderKey, compact, compactCount);
+  }
+  const bool saved = compactCount > 0 && written == compactCount;
+  catalogPreferences.end();
+  if (!saved) {
+    serialLogPrintf(kSerialLogSystemBit,
+                    "ERROR: Could not write %u-byte station group order to NVS.\n",
+                    static_cast<unsigned>(compactCount));
+  }
+  return saved;
+}
 
-  if (persistPlaylist()) {
-    catalogPreferences.begin("catalog", false);
-    catalogPreferences.putBool(kRegionSortKey, true);
-    catalogPreferences.end();
+void loadStationGroupOrder() {
+  resetStationGroupOrderInMemory();
+  stationGroupOrderLoaded = false;
+  Preferences catalogPreferences;
+  if (!catalogPreferences.begin("catalog", true)) return;
+  const size_t storedLength = catalogPreferences.getBytesLength(kGroupOrderKey);
+  uint8_t stored[kStationGroupCapacity] = {};
+  const size_t readLength =
+      storedLength > 0 && storedLength <= sizeof(stored)
+          ? catalogPreferences.getBytes(kGroupOrderKey, stored, storedLength)
+          : 0;
+  catalogPreferences.end();
+  if (readLength == 0) return;
+  stationGroupOrderLoaded = true;
+
+  uint8_t normalized[kStationGroupCapacity] = {};
+  uint8_t normalizedCount = 0;
+  for (size_t index = 0; index < readLength; ++index) {
+    const uint8_t id = stored[index];
+    if (!isKnownStationGroup(id)) continue;
+    bool duplicate = false;
+    for (uint8_t prior = 0; prior < normalizedCount; ++prior) {
+      if (normalized[prior] == id) duplicate = true;
+    }
+    if (!duplicate) normalized[normalizedCount++] = id;
   }
+  for (uint8_t id : kDefaultStationGroupOrder) {
+    bool present = false;
+    for (uint8_t index = 0; index < normalizedCount; ++index) {
+      if (normalized[index] == id) present = true;
+    }
+    if (present || id == kOtherStationGroupId) continue;
+    uint8_t insertion = normalizedCount;
+    for (uint8_t index = 0; index < normalizedCount; ++index) {
+      if (normalized[index] == kOtherStationGroupId) {
+        insertion = index;
+        break;
+      }
+    }
+    for (uint8_t index = normalizedCount; index > insertion; --index) {
+      normalized[index] = normalized[index - 1];
+    }
+    normalized[insertion] = id;
+    ++normalizedCount;
+  }
+  bool hasOther = false;
+  for (uint8_t index = 0; index < normalizedCount; ++index) {
+    if (normalized[index] == kOtherStationGroupId) hasOther = true;
+  }
+  if (!hasOther) normalized[normalizedCount++] = kOtherStationGroupId;
+  memcpy(stationGroupOrder, normalized, normalizedCount);
+  stationGroupOrderCount = normalizedCount;
+}
+
+bool regroupStationsInMemory() {
+  if (stationCount < 2) return true;
+  Station *ordered = static_cast<Station *>(ps_malloc(stationCount * sizeof(Station)));
+  if (ordered == nullptr) return false;
+
+  uint16_t output = 0;
+  uint16_t trackedSelection = selectedStation;
+  for (uint8_t order = 0; order < stationGroupOrderCount; ++order) {
+    const uint8_t groupId = stationGroupOrder[order];
+    for (uint16_t input = 0; input < stationCount; ++input) {
+      if (stationRegionOrder(stations[input].name) != groupId) continue;
+      ordered[output] = stations[input];
+      if (input == selectedStation) trackedSelection = output;
+      ++output;
+    }
+  }
+  if (output != stationCount) {
+    free(ordered);
+    return false;
+  }
+  memcpy(stations, ordered, stationCount * sizeof(Station));
+  free(ordered);
+  selectedStation = trackedSelection;
+  return true;
+}
+
+bool stationGroupsAreContiguousAndOrdered() {
+  uint8_t previousRank = 0;
+  bool first = true;
+  for (uint16_t index = 0; index < stationCount; ++index) {
+    const uint8_t rank = stationGroupOrderIndex(stationRegionOrder(stations[index].name));
+    if (!first && rank < previousRank) return false;
+    previousRank = rank;
+    first = false;
+  }
+  return true;
+}
+
+void initialiseStationGroups(bool forceRegroup = false) {
+  loadStationGroupOrder();
+  const bool needsRegroup = forceRegroup || !stationGroupOrderLoaded ||
+                            !stationGroupsAreContiguousAndOrdered();
+  if (needsRegroup) {
+    if (!regroupStationsInMemory() || !persistPlaylist()) return;
+  }
+
+  stationGroupOrderLoaded = persistStationGroupOrder();
 }
 
 void addLog(const char *kind, const char *message) {
@@ -2342,7 +3035,7 @@ bool startSelectedStationV8(const char *reason) {
   return true;
 }
 
-void onPlaylistSelectionV8(uint8_t) {
+void onPlaylistSelectionV8(uint16_t) {
   playbackEnabled = true;
   stationChangePending = true;
   pendingPlaybackReason = "station selected";
@@ -2637,7 +3330,7 @@ void handlePlayerVolumeV8() {
 void handlePlayerPreviousV9() {
   if (!requireAdmin()) return;
   if (stationCount == 0) { sendJson("{\"error\":\"playlist is empty\"}", 409); return; }
-  const uint8_t previousSelection = selectedStation;
+  const uint16_t previousSelection = selectedStation;
   selectedStation = selectedStation == 0 ? stationCount - 1 : selectedStation - 1;
   if (!persistSelectedStation()) {
     selectedStation = previousSelection;
@@ -2658,7 +3351,7 @@ void handlePlayerPreviousV9() {
 void handlePlayerNextV9() {
   if (!requireAdmin()) return;
   if (stationCount == 0) { sendJson("{\"error\":\"playlist is empty\"}", 409); return; }
-  const uint8_t previousSelection = selectedStation;
+  const uint16_t previousSelection = selectedStation;
   selectedStation = (selectedStation + 1) % stationCount;
   if (!persistSelectedStation()) {
     selectedStation = previousSelection;
@@ -2674,19 +3367,6 @@ void handlePlayerNextV9() {
   statusLedError = false;
   setPlayerMessage("switching station");
   sendAdminPlayerStatus();
-}
-
-String userPlaylistJson() {
-  String json = "{\"revision\":" + String(playlistRevision) +
-                ",\"selected\":" + String(selectedStation) +
-                ",\"stations\":[";
-  for (uint8_t index = 0; index < stationCount; ++index) {
-    if (index) json += ',';
-    json += "{\"id\":" + String(index) + ",\"name\":\"" +
-            jsonEscape(stations[index].name) + "\",\"logo\":\"" +
-            jsonEscape(stations[index].logo) + "\"}";
-  }
-  return json + "]}";
 }
 
 String userPlayerStatusJson() {
@@ -2711,8 +3391,8 @@ void requestUserPlayback(const char *reason) {
   setPlayerMessage("connecting");
 }
 
-bool selectStationForUser(uint8_t id, const char *reason) {
-  const uint8_t previousSelection = selectedStation;
+bool selectStationForUser(uint16_t id, const char *reason) {
+  const uint16_t previousSelection = selectedStation;
   selectedStation = id;
   if (!persistSelectedStation()) {
     selectedStation = previousSelection;
@@ -2733,6 +3413,7 @@ struct TouchButton {
 
 TouchButton previousTouch{config::kPreviousTouchPin};
 TouchButton nextTouch{config::kNextTouchPin};
+TouchButton playPauseTouch{config::kPlayPauseTouchPin};
 uint32_t lastTouchScanAt = 0;
 uint32_t lastTouchDebugAt = 0;
 uint8_t touchSensitivityPercent = config::kDefaultTouchSensitivityPercent;
@@ -2740,6 +3421,7 @@ bool touchCalibrationInProgress = false;
 uint8_t touchCalibrationSampleCount = 0;
 uint64_t previousTouchCalibrationTotal = 0;
 uint64_t nextTouchCalibrationTotal = 0;
+uint64_t playPauseTouchCalibrationTotal = 0;
 char serialCommandBuffer[config::kSerialCommandBufferSize] = {};
 size_t serialCommandLength = 0;
 
@@ -2777,6 +3459,7 @@ void printTouchStatus() {
   }
   printTouchButtonStatus("previous", previousTouch);
   printTouchButtonStatus("next", nextTouch);
+  printTouchButtonStatus("play", playPauseTouch);
 }
 
 void calibrateTouchButton(TouchButton &button) {
@@ -2796,9 +3479,10 @@ void calibrateTouchButton(TouchButton &button) {
 }
 
 void initialiseTouchButtons() {
-  // Keep both electrodes untouched during this short startup calibration.
+  // Keep all three electrodes untouched during this short startup calibration.
   calibrateTouchButton(previousTouch);
   calibrateTouchButton(nextTouch);
+  calibrateTouchButton(playPauseTouch);
 }
 
 void beginTouchCalibration() {
@@ -2806,20 +3490,26 @@ void beginTouchCalibration() {
   touchCalibrationSampleCount = 0;
   previousTouchCalibrationTotal = 0;
   nextTouchCalibrationTotal = 0;
+  playPauseTouchCalibrationTotal = 0;
   previousTouch.ready = false;
   nextTouch.ready = false;
+  playPauseTouch.ready = false;
   previousTouch.pressed = false;
   nextTouch.pressed = false;
+  playPauseTouch.pressed = false;
   previousTouch.consecutiveSamples = 0;
   nextTouch.consecutiveSamples = 0;
-  Serial.println("TOUCH calibration started; release both electrodes");
+  playPauseTouch.consecutiveSamples = 0;
+  Serial.println("TOUCH calibration started; release all three electrodes");
 }
 
 void sampleTouchCalibration() {
   previousTouch.lastValue = touchRead(previousTouch.pin);
   nextTouch.lastValue = touchRead(nextTouch.pin);
+  playPauseTouch.lastValue = touchRead(playPauseTouch.pin);
   previousTouchCalibrationTotal += previousTouch.lastValue;
   nextTouchCalibrationTotal += nextTouch.lastValue;
+  playPauseTouchCalibrationTotal += playPauseTouch.lastValue;
   ++touchCalibrationSampleCount;
   if (touchCalibrationSampleCount < config::kTouchCalibrationSamples) return;
 
@@ -2827,10 +3517,14 @@ void sampleTouchCalibration() {
       previousTouchCalibrationTotal / config::kTouchCalibrationSamples);
   nextTouch.baseline = static_cast<uint32_t>(
       nextTouchCalibrationTotal / config::kTouchCalibrationSamples);
+  playPauseTouch.baseline = static_cast<uint32_t>(
+      playPauseTouchCalibrationTotal / config::kTouchCalibrationSamples);
   previousTouch.lastValue = previousTouch.baseline;
   nextTouch.lastValue = nextTouch.baseline;
+  playPauseTouch.lastValue = playPauseTouch.baseline;
   previousTouch.ready = previousTouch.baseline > 0;
   nextTouch.ready = nextTouch.baseline > 0;
+  playPauseTouch.ready = playPauseTouch.baseline > 0;
   touchCalibrationInProgress = false;
   Serial.println("TOUCH calibration complete");
   printTouchStatus();
@@ -2883,10 +3577,41 @@ void pollTouchButtons() {
 
   const bool previousPressed = updateTouchButton(previousTouch);
   const bool nextPressed = updateTouchButton(nextTouch);
-  // Ignore a simultaneous two-pad press instead of making two station changes.
-  if (previousPressed == nextPressed || stationCount == 0) return;
+  const bool playPausePressed = updateTouchButton(playPauseTouch);
+  const uint8_t pressedCount = static_cast<uint8_t>(previousPressed) +
+                               static_cast<uint8_t>(nextPressed) +
+                               static_cast<uint8_t>(playPausePressed);
+  // Ignore simultaneous pads rather than triggering more than one action.
+  const bool anotherPadHeld =
+      (previousPressed && (nextTouch.pressed || playPauseTouch.pressed)) ||
+      (nextPressed && (previousTouch.pressed || playPauseTouch.pressed)) ||
+      (playPausePressed && (previousTouch.pressed || nextTouch.pressed));
+  if (pressedCount != 1 || anotherPadHeld || stationCount == 0) return;
 
-  const uint8_t target = previousPressed
+  if (playPausePressed) {
+    if (touchDebugEnabled) {
+      Serial.printf("TOUCH event=%s raw=%lu\n",
+                    playbackEnabled ? "pause" : "play",
+                    static_cast<unsigned long>(playPauseTouch.lastValue));
+    }
+    if (playbackEnabled) {
+      playbackEnabled = false;
+      stationChangePending = false;
+      playbackAwaitingReady = false;
+      playbackFaultPending = false;
+      statusLedError = false;
+      audio.stopSong();
+      playerRequested = false;
+      setPlayerMessage("stopped by touch");
+      addLog("touch", "playback paused");
+    } else {
+      requestUserPlayback("play requested from touch");
+      addLog("touch", "playback resumed");
+    }
+    return;
+  }
+
+  const uint16_t target = previousPressed
       ? (selectedStation == 0 ? stationCount - 1 : selectedStation - 1)
       : (selectedStation + 1) % stationCount;
   const char *reason = previousPressed ? "previous station from touch"
@@ -2979,7 +3704,7 @@ void printTouchDebugIfDue() {
 }
 
 void handleUserSelectStation() {
-  uint8_t id;
+  uint16_t id;
   if (!parseStationId(id)) {
     sendJson("{\"error\":\"invalid station id\"}", 400);
     return;
@@ -3013,7 +3738,7 @@ void handleUserStop() {
 
 void handleUserPrevious() {
   if (stationCount == 0) { sendJson("{\"error\":\"playlist is empty\"}", 409); return; }
-  const uint8_t target = selectedStation == 0 ? stationCount - 1 : selectedStation - 1;
+  const uint16_t target = selectedStation == 0 ? stationCount - 1 : selectedStation - 1;
   if (!selectStationForUser(target, "previous station from user page")) {
     sendJson("{\"error\":\"could not save selected station\"}", 500);
     return;
@@ -3023,7 +3748,7 @@ void handleUserPrevious() {
 
 void handleUserNext() {
   if (stationCount == 0) { sendJson("{\"error\":\"playlist is empty\"}", 409); return; }
-  const uint8_t target = (selectedStation + 1) % stationCount;
+  const uint16_t target = (selectedStation + 1) % stationCount;
   if (!selectStationForUser(target, "next station from user page")) {
     sendJson("{\"error\":\"could not save selected station\"}", 500);
     return;
@@ -3073,29 +3798,43 @@ void handleUserVolume() {
 }
 
 void handleMoveStationV11() {
-  uint8_t id;
+  uint16_t id;
   if (!parseStationId(id)) {
     sendJson("{\"error\":\"invalid station id\"}", 400);
     return;
   }
 
   const String direction = server.arg("direction");
-  uint8_t target = id;
-  if (direction == "up" && id > 0) target = id - 1;
-  else if (direction == "down" && id + 1 < stationCount) target = id + 1;
-  else if (direction == "first") target = 0;
-  else if (direction == "last") target = stationCount - 1;
+  const uint8_t groupId = stationRegionOrder(stations[id].name);
+  uint16_t groupFirst = id;
+  uint16_t groupLast = id;
+  while (groupFirst > 0 &&
+         stationRegionOrder(stations[groupFirst - 1].name) == groupId) {
+    --groupFirst;
+  }
+  while (groupLast + 1 < stationCount &&
+         stationRegionOrder(stations[groupLast + 1].name) == groupId) {
+    ++groupLast;
+  }
+  uint16_t target = id;
+  if (direction == "up" && id > groupFirst) target = id - 1;
+  else if (direction == "down" && id < groupLast) target = id + 1;
+  else if (direction == "first") target = groupFirst;
+  else if (direction == "last") target = groupLast;
   else if (direction != "up" && direction != "down") {
     sendJson("{\"error\":\"invalid move direction\"}", 400);
+    return;
+  } else {
+    sendJson("{\"error\":\"station cannot cross its group boundary\"}", 409);
     return;
   }
 
   if (target == id) {
-    sendJson(playlistJson());
+    sendPlaylistJson(true);
     return;
   }
 
-  const uint8_t previousSelection = selectedStation;
+  const uint16_t previousSelection = selectedStation;
   Station moved = {};
   if (target != id) {
     moved = stations[id];
@@ -3106,7 +3845,7 @@ void handleMoveStationV11() {
         ++selectedStation;
       }
     } else {
-      for (uint8_t index = id; index < target; ++index) stations[index] = stations[index + 1];
+      for (uint16_t index = id; index < target; ++index) stations[index] = stations[index + 1];
       if (!movedStationWasSelected && selectedStation > id && selectedStation <= target) {
         --selectedStation;
       }
@@ -3118,19 +3857,178 @@ void handleMoveStationV11() {
   const bool saved = persistPlaylist();
   if (!saved && target != id) {
     if (target < id) {
-      for (uint8_t index = target; index < id; ++index) {
+      for (uint16_t index = target; index < id; ++index) {
         stations[index] = stations[index + 1];
       }
     } else {
-      for (uint8_t index = target; index > id; --index) {
+      for (uint16_t index = target; index > id; --index) {
         stations[index] = stations[index - 1];
       }
     }
     stations[id] = moved;
     selectedStation = previousSelection;
   }
-  sendJson(saved ? playlistJson() : "{\"error\":\"could not save playlist\"}",
-           saved ? 200 : 500);
+  if (saved) sendPlaylistJson(true);
+  else sendJson("{\"error\":\"could not save playlist\"}", 500);
+}
+
+bool parseStationGroupId(uint8_t &id) {
+  if (!server.hasArg("id")) return false;
+  const String value = server.arg("id");
+  if (value.isEmpty()) return false;
+  uint16_t parsed = 0;
+  for (size_t index = 0; index < value.length(); ++index) {
+    const char character = value[index];
+    if (character < '0' || character > '9') return false;
+    parsed = parsed * 10U + static_cast<uint8_t>(character - '0');
+    if (parsed > UINT8_MAX) return false;
+  }
+  id = static_cast<uint8_t>(parsed);
+  if (!isKnownStationGroup(id)) return false;
+  for (uint16_t index = 0; index < stationCount; ++index) {
+    if (stationRegionOrder(stations[index].name) == id) return true;
+  }
+  return false;
+}
+
+enum class StationGroupSaveResult : uint8_t {
+  Ok,
+  MemoryFailure,
+  PlaylistFailure,
+  OrderFailure,
+};
+
+StationGroupSaveResult applyStationGroupOrderTransaction(
+    const uint8_t *previousOrder, uint8_t previousCount) {
+  if (!regroupStationsInMemory()) {
+    memcpy(stationGroupOrder, previousOrder, previousCount);
+    stationGroupOrderCount = previousCount;
+    return StationGroupSaveResult::MemoryFailure;
+  }
+  bool playlistSaved = persistPlaylist();
+  if (!playlistSaved && playlistStorageReady) {
+    serialLogPrintln(kSerialLogSystemBit,
+                     "WARN: Retrying station group playlist snapshot.");
+    playlistFileStoreUnavailable = false;
+    playlistSaved = persistPlaylist();
+  }
+  if (!playlistSaved) {
+    memcpy(stationGroupOrder, previousOrder, previousCount);
+    stationGroupOrderCount = previousCount;
+    regroupStationsInMemory();
+    return StationGroupSaveResult::PlaylistFailure;
+  }
+  if (persistStationGroupOrder()) {
+    stationGroupOrderLoaded = true;
+    return StationGroupSaveResult::Ok;
+  }
+
+  memcpy(stationGroupOrder, previousOrder, previousCount);
+  stationGroupOrderCount = previousCount;
+  regroupStationsInMemory();
+  persistPlaylist();
+  persistStationGroupOrder();
+  return StationGroupSaveResult::OrderFailure;
+}
+
+void sendStationGroupSaveError(StationGroupSaveResult result) {
+  switch (result) {
+    case StationGroupSaveResult::MemoryFailure:
+      sendJson("{\"error\":\"内存不足，未调整分组顺序\"}", 500);
+      break;
+    case StationGroupSaveResult::PlaylistFailure:
+      sendJson("{\"error\":\"LittleFS 播放列表保存失败，已恢复原顺序；请查看诊断日志\"}", 500);
+      break;
+    case StationGroupSaveResult::OrderFailure:
+      sendJson("{\"error\":\"NVS 分组顺序保存失败，已恢复原顺序；请查看诊断日志\"}", 500);
+      break;
+    default:
+      break;
+  }
+}
+
+void handleMoveStationGroup() {
+  uint8_t groupId;
+  if (!parseStationGroupId(groupId)) {
+    sendJson("{\"error\":\"invalid or empty station group\"}", 400);
+    return;
+  }
+  const String direction = server.arg("direction");
+  if (direction != "first" && direction != "up" &&
+      direction != "down" && direction != "last") {
+    sendJson("{\"error\":\"invalid move direction\"}", 400);
+    return;
+  }
+
+  bool present[256] = {};
+  for (uint16_t index = 0; index < stationCount; ++index) {
+    present[stationRegionOrder(stations[index].name)] = true;
+  }
+  const uint8_t current = stationGroupOrderIndex(groupId);
+  uint8_t target = current;
+  if (direction == "first") {
+    for (uint8_t index = 0; index < stationGroupOrderCount; ++index) {
+      if (present[stationGroupOrder[index]]) { target = index; break; }
+    }
+  } else if (direction == "last") {
+    for (int index = stationGroupOrderCount - 1; index >= 0; --index) {
+      if (present[stationGroupOrder[index]]) {
+        target = static_cast<uint8_t>(index);
+        break;
+      }
+    }
+  } else if (direction == "up") {
+    for (int index = current - 1; index >= 0; --index) {
+      if (present[stationGroupOrder[index]]) {
+        target = static_cast<uint8_t>(index);
+        break;
+      }
+    }
+  } else {
+    for (uint8_t index = current + 1; index < stationGroupOrderCount; ++index) {
+      if (present[stationGroupOrder[index]]) { target = index; break; }
+    }
+  }
+  if (target == current) {
+    sendJson("{\"moved\":false,\"revision\":" + String(playlistRevision) + "}");
+    return;
+  }
+
+  uint8_t previousOrder[kStationGroupCapacity] = {};
+  memcpy(previousOrder, stationGroupOrder, stationGroupOrderCount);
+  const uint8_t previousCount = stationGroupOrderCount;
+  if (target < current) {
+    for (uint8_t index = current; index > target; --index) {
+      stationGroupOrder[index] = stationGroupOrder[index - 1];
+    }
+  } else {
+    for (uint8_t index = current; index < target; ++index) {
+      stationGroupOrder[index] = stationGroupOrder[index + 1];
+    }
+  }
+  stationGroupOrder[target] = groupId;
+
+  const StationGroupSaveResult result =
+      applyStationGroupOrderTransaction(previousOrder, previousCount);
+  if (result != StationGroupSaveResult::Ok) {
+    sendStationGroupSaveError(result);
+    return;
+  }
+  sendJson("{\"moved\":true,\"revision\":" + String(playlistRevision) + "}");
+}
+
+void handleResetStationGroups() {
+  uint8_t previousOrder[kStationGroupCapacity] = {};
+  memcpy(previousOrder, stationGroupOrder, stationGroupOrderCount);
+  const uint8_t previousCount = stationGroupOrderCount;
+  resetStationGroupOrderInMemory();
+  const StationGroupSaveResult result =
+      applyStationGroupOrderTransaction(previousOrder, previousCount);
+  if (result != StationGroupSaveResult::Ok) {
+    sendStationGroupSaveError(result);
+    return;
+  }
+  sendJson("{\"reset\":true,\"revision\":" + String(playlistRevision) + "}");
 }
 
 void handleDiagnostics() { if (requireAdmin()) sendJson(diagnosticsJson()); }
@@ -3307,7 +4205,7 @@ void handleOtaResult() {
 
 constexpr char kUserHtmlV301[] PROGMEM = R"HTML(
 <!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#656b6a"><title>网络收音机</title><style>
-:root{color-scheme:dark;--bg:#656b6a;--panel:#707675;--text:#fff;--muted:#d7dcda;--line:#858b89;--accent:#f2a51a}*{box-sizing:border-box}body{margin:0;background:#4e5453;color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}.app{position:relative;width:100%;max-width:720px;min-height:100vh;margin:auto;padding:20px clamp(18px,5vw,42px) 50px;background:var(--bg);box-shadow:0 0 32px #0004}.settings{position:absolute;right:18px;top:16px;display:grid;place-items:center;width:48px;height:48px;border:0;border-radius:50%;background:#ffffff1c;color:#fff;text-decoration:none;font-size:27px}.settings:active{transform:scale(.96)}.hero{text-align:center;padding-top:58px}.cover-wrap{position:relative;width:min(48vw,250px);aspect-ratio:1;margin:auto;border-radius:22px;background:#f5f5f5;overflow:hidden;box-shadow:0 8px 25px #0003}.cover{display:block;width:100%;height:100%;object-fit:contain;object-position:center}.cover-fallback{position:absolute;inset:0;display:none;place-items:center;background:linear-gradient(145deg,#f5a623,#d47b13);font-size:clamp(46px,12vw,78px);font-weight:800}.station-name{min-height:1.5em;margin:25px 0 5px;font-size:clamp(25px,5vw,34px);font-weight:700}.state{color:var(--accent);font-size:18px}.progress{height:7px;margin:34px 0 28px;background:#a7adaa;border-radius:10px;overflow:hidden}.progress i{display:block;width:0;height:100%;background:var(--accent);transition:width .4s}.progress.busy i{width:58%;animation:load 1.5s ease-in-out infinite}@keyframes load{0%{transform:translateX(-110%)}100%{transform:translateX(180%)}}.controls{display:flex;align-items:center;justify-content:space-around;max-width:530px;margin:auto}.controls button{display:grid;place-items:center;border:0;color:#fff;background:transparent;cursor:pointer}.controls button:not(.play){width:80px;height:70px;font-size:42px}.controls .play{width:108px;height:108px;border-radius:50%;background:#fff;color:#5e6463;font-size:48px;box-shadow:0 7px 22px #0003}.volume{display:flex;align-items:center;gap:13px;margin:30px 4px 24px;color:var(--muted)}input[type=range]{width:100%;accent-color:var(--accent)}.list-title{display:flex;align-items:center;justify-content:space-between;margin:15px 0 5px}.list-title h2{font-size:18px;margin:0}.count{color:var(--muted);font-size:14px}.station-list{border-top:1px solid var(--line)}.station{display:flex;align-items:center;gap:17px;width:100%;min-height:88px;padding:12px 10px;border:0;border-bottom:1px solid var(--line);background:transparent;color:#fff;text-align:left;cursor:pointer}.station.active{background:#ffffff12;border-left:4px solid var(--accent);padding-left:6px}.station img,.station .fallback{display:block;flex:0 0 62px;width:62px;height:62px;border-radius:13px;background:#f7f7f7;object-fit:contain;object-position:center}.station .fallback{display:grid;place-items:center;background:linear-gradient(145deg,#f5a623,#d47b13);color:#fff;font-size:25px;font-weight:800}.station b{font-size:19px;font-weight:600}.station small{display:block;margin-top:4px;color:var(--muted)}.notice{padding:30px 8px;text-align:center;color:var(--muted)}@media(max-width:480px){.app{padding-left:16px;padding-right:16px}.hero{padding-top:50px}.cover-wrap{width:56vw}.station-name{font-size:25px}.controls .play{width:94px;height:94px}.controls button:not(.play){font-size:34px}.station{min-height:78px}.station img,.station .fallback{flex-basis:54px;width:54px;height:54px}}</style></head>
+:root{color-scheme:dark;--bg:#656b6a;--panel:#707675;--text:#fff;--muted:#d7dcda;--line:#858b89;--accent:#f2a51a}*{box-sizing:border-box}body{margin:0;background:#4e5453;color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}.app{position:relative;width:100%;max-width:720px;min-height:100vh;margin:auto;padding:20px clamp(18px,5vw,42px) 50px;background:var(--bg);box-shadow:0 0 32px #0004}.settings{position:absolute;right:18px;top:16px;display:grid;place-items:center;width:48px;height:48px;border:0;border-radius:50%;background:#ffffff1c;color:#fff;text-decoration:none;font-size:27px}.settings:active{transform:scale(.96)}.hero{text-align:center;padding-top:58px}.cover-wrap{position:relative;width:min(48vw,250px);aspect-ratio:1;margin:auto;border-radius:22px;background:#f5f5f5;overflow:hidden;box-shadow:0 8px 25px #0003}.cover{display:block;width:100%;height:100%;object-fit:contain;object-position:center}.cover-fallback{position:absolute;inset:0;display:none;place-items:center;background:linear-gradient(145deg,#f5a623,#d47b13);font-size:clamp(46px,12vw,78px);font-weight:800}.station-name{min-height:1.5em;margin:25px 0 5px;font-size:clamp(25px,5vw,34px);font-weight:700}.state{color:var(--accent);font-size:18px}.progress{height:7px;margin:34px 0 28px;background:#a7adaa;border-radius:10px;overflow:hidden}.progress i{display:block;width:0;height:100%;background:var(--accent);transition:width .4s}.progress.busy i{width:58%;animation:load 1.5s ease-in-out infinite}@keyframes load{0%{transform:translateX(-110%)}100%{transform:translateX(180%)}}.controls{display:flex;align-items:center;justify-content:space-around;max-width:530px;margin:auto}.controls button{display:grid;place-items:center;border:0;color:#fff;background:transparent;cursor:pointer}.controls button:not(.play){width:80px;height:70px;font-size:42px}.controls .play{width:108px;height:108px;border-radius:50%;background:#fff;color:#5e6463;font-size:48px;box-shadow:0 7px 22px #0003}.volume{display:flex;align-items:center;gap:13px;margin:30px 4px 24px;color:var(--muted)}input[type=range]{width:100%;accent-color:var(--accent)}.list-title{display:flex;align-items:center;justify-content:space-between;margin:15px 0 5px}.list-title h2{font-size:18px;margin:0}.count{color:var(--muted);font-size:14px}.station-list{border-top:1px solid var(--line)}.station-group{padding:20px 10px 7px;color:var(--accent);font-size:15px;font-weight:800;border-bottom:1px solid var(--line)}.station{display:flex;align-items:center;gap:17px;width:100%;min-height:88px;padding:12px 10px;border:0;border-bottom:1px solid var(--line);background:transparent;color:#fff;text-align:left;cursor:pointer;content-visibility:auto;contain-intrinsic-size:88px}.station.active{background:#ffffff12;border-left:4px solid var(--accent);padding-left:6px}.station img,.station .fallback{display:block;flex:0 0 62px;width:62px;height:62px;border-radius:13px;background:#f7f7f7;object-fit:contain;object-position:center}.station .fallback{display:grid;place-items:center;background:linear-gradient(145deg,#f5a623,#d47b13);color:#fff;font-size:25px;font-weight:800}.station b{font-size:19px;font-weight:600}.station small{display:block;margin-top:4px;color:var(--muted)}.notice{padding:30px 8px;text-align:center;color:var(--muted)}@media(max-width:480px){.app{padding-left:16px;padding-right:16px}.hero{padding-top:50px}.cover-wrap{width:56vw}.station-name{font-size:25px}.controls .play{width:94px;height:94px}.controls button:not(.play){font-size:34px}.station{min-height:78px;contain-intrinsic-size:78px}.station img,.station .fallback{flex-basis:54px;width:54px;height:54px}}</style></head>
 <body><main class="app"><a class="settings" href="/admin" aria-label="进入管理页面" title="设置">⚙</a><section class="hero"><div class="cover-wrap"><img id="cover" class="cover" alt="当前电台台标"><div id="coverFallback" class="cover-fallback">R</div></div><div id="stationName" class="station-name">加载中…</div><div id="state" class="state">正在连接设备</div></section><div id="progress" class="progress"><i></i></div><nav class="controls" aria-label="播放控制"><button id="previous" aria-label="上一台">◀</button><button id="play" class="play" aria-label="播放或暂停">▶</button><button id="next" aria-label="下一台">▶</button></nav><div class="volume"><span>🔉</span><input id="volume" type="range" min="0" max="21" aria-label="音量"><span>🔊</span></div><div class="list-title"><h2>电台列表</h2><span id="count" class="count"></span></div><section id="stations" class="station-list"></section></main>
 <script>
 const q=s=>document.querySelector(s),textureStyles={none:['none','auto'],dots:['radial-gradient(#ffffff24 1px,transparent 1px)','18px 18px'],grid:['linear-gradient(#ffffff16 1px,transparent 1px),linear-gradient(90deg,#ffffff16 1px,transparent 1px)','24px 24px'],diagonal:['repeating-linear-gradient(135deg,#ffffff0d 0 2px,transparent 2px 12px)','auto'],cloud:['radial-gradient(circle at 12px 14px,transparent 9px,#ffffff1f 10px 11px,transparent 12px),radial-gradient(circle at 28px 14px,transparent 9px,#ffffff1f 10px 11px,transparent 12px)','40px 28px'],lattice:['linear-gradient(45deg,#ffffff14 12.5%,transparent 12.5% 37.5%,#ffffff14 37.5% 62.5%,transparent 62.5% 87.5%,#ffffff14 87.5%)','32px 32px'],waves:['radial-gradient(ellipse at 50% 100%,transparent 11px,#ffffff1c 12px 13px,transparent 14px)','34px 18px'],bamboo:['repeating-linear-gradient(90deg,transparent 0 30px,#ffffff16 31px 33px,transparent 34px 62px),repeating-linear-gradient(0deg,transparent 0 54px,#ffffff0d 55px 57px,transparent 58px 86px)','64px 88px'],ricepaper:['linear-gradient(25deg,#ffffff0a 1px,transparent 1px),linear-gradient(115deg,#ffffff08 1px,transparent 1px)','37px 53px,41px 47px'],porcelain:['radial-gradient(circle at 0 0,transparent 15px,#ffffff20 16px 17px,transparent 18px),radial-gradient(circle at 100% 100%,transparent 15px,#ffffff20 16px 17px,transparent 18px)','40px 40px']};
@@ -3317,20 +4215,21 @@ function safeLogo(name){return typeof name==='string'&&/^[A-Za-z0-9._-]+$/.test(
 function setImage(image,fallback,station){const name=(station&&station.name||'R').trim().slice(0,1).toUpperCase();fallback.textContent=name||'R';const url=safeLogo(station&&station.logo);if(!url){image.style.display='none';fallback.style.display='grid';return}image.style.display='block';fallback.style.display='none';image.onerror=()=>{image.style.display='none';fallback.style.display='grid'};image.src=url}
 function updateRows(){document.querySelectorAll('[data-station-id]').forEach(row=>row.classList.toggle('active',Number(row.dataset.stationId)===selected))}
 function renderNow(){const station=stations.find(s=>s.id===selected)||{name:'网络收音机',logo:''};q('#stationName').textContent=station.name;q('#play').textContent=playerState==='playing'?'Ⅱ':'▶';q('#state').textContent=({playing:'正在播放',buffering_or_reconnecting:'正在缓冲',stopped:'已暂停'})[playerState]||'正在恢复连接';q('#progress').classList.toggle('busy',playerState!=='playing'&&playerState!=='stopped');setImage(q('#cover'),q('#coverFallback'),station);updateRows()}
-function renderStations(){const host=q('#stations');host.replaceChildren();q('#count').textContent=stations.length+' 个电台';if(!stations.length){const e=document.createElement('div');e.className='notice';e.textContent='暂无电台，请到管理页面添加';host.append(e);return}stations.forEach(station=>{const row=document.createElement('button'),img=document.createElement('img'),fallback=document.createElement('span'),text=document.createElement('span'),name=document.createElement('b');row.className='station';row.dataset.stationId=station.id;row.addEventListener('click',()=>selectStation(station.id));fallback.className='fallback';name.textContent=station.name;text.append(name);if(station.id===selected){const hint=document.createElement('small');hint.textContent='当前电台';text.append(hint)}setImage(img,fallback,station);row.append(img,fallback,text);host.append(row)});updateRows()}
+function stationButton(station){const row=document.createElement('button'),img=document.createElement('img'),fallback=document.createElement('span'),text=document.createElement('span'),name=document.createElement('b');row.className='station';row.dataset.stationId=station.id;row.addEventListener('click',()=>selectStation(station.id));img.loading='lazy';img.decoding='async';fallback.className='fallback';name.textContent=station.name;text.append(name);if(station.id===selected){const hint=document.createElement('small');hint.textContent='当前电台';text.append(hint)}setImage(img,fallback,station);row.append(img,fallback,text);return row}
+function renderStations(){const host=q('#stations');host.replaceChildren();q('#count').textContent=stations.length+' 个电台';if(!stations.length){const e=document.createElement('div');e.className='notice';e.textContent='暂无电台，请到管理页面添加';host.append(e);return}let group='';stations.forEach(station=>{if(station.group!==group){group=station.group;const heading=document.createElement('div');heading.className='station-group';heading.textContent=group;host.append(heading)}host.append(stationButton(station))});updateRows()}
 function applyPlayer(data){playerState=data.state||playerState;if(Number.isInteger(data.selected_station))selected=data.selected_station;if(Number.isInteger(data.volume))q('#volume').value=data.volume;renderNow()}
 async function loadStations(){const data=await api('/api/user/stations');stations=Array.isArray(data.stations)?data.stations:[];selected=data.selected;playlistRevision=data.revision||0;renderStations();renderNow()}
 async function command(url){try{applyPlayer(await api(url,{method:'POST'}))}catch(e){alert(e.message)}}
-function selectStation(id){selected=id;playerState='buffering_or_reconnecting';renderStations();renderNow();command('/api/user/stations/select?id='+encodeURIComponent(id))}
+function selectStation(id){selected=id;playerState='buffering_or_reconnecting';renderNow();command('/api/user/stations/select?id='+encodeURIComponent(id))}
 async function refresh(){if(refreshBusy)return;refreshBusy=true;try{const data=await api('/api/user/player/status');applyPlayer(data);if(data.playlist_revision!==playlistRevision)await loadStations()}catch(e){q('#state').textContent='设备连接失败'}finally{refreshBusy=false;setTimeout(refresh,document.hidden?30000:5000)}}
 q('#play').addEventListener('click',()=>command(playerState==='playing'?'/api/user/player/stop':'/api/user/player/play'));q('#previous').addEventListener('click',()=>command('/api/user/player/previous'));q('#next').addEventListener('click',()=>command('/api/user/player/next'));q('#volume').addEventListener('input',e=>{clearTimeout(volumeTimer);volumeTimer=setTimeout(()=>command('/api/user/player/volume?value='+encodeURIComponent(e.target.value)),180)});
-document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh()});api('/api/user/theme').then(theme=>{document.documentElement.style.setProperty('--bg',theme.background);document.documentElement.style.setProperty('--accent',theme.accent);document.body.style.backgroundColor=theme.background;q('meta[name="theme-color"]').content=theme.background;const t=textureStyles[theme.texture]||textureStyles.none;q('.app').style.backgroundImage=t[0];q('.app').style.backgroundSize=t[1]}).catch(()=>{});loadStations().then(refresh).catch(e=>{const n=document.createElement('div');n.className='notice';n.textContent=e.message;q('#stations').replaceChildren(n)});
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh()});refresh();api('/api/user/theme').then(theme=>{document.documentElement.style.setProperty('--bg',theme.background);document.documentElement.style.setProperty('--accent',theme.accent);document.body.style.backgroundColor=theme.background;q('meta[name="theme-color"]').content=theme.background;const t=textureStyles[theme.texture]||textureStyles.none;q('.app').style.backgroundImage=t[0];q('.app').style.backgroundSize=t[1]}).catch(()=>{});
 </script></body></html>
 )HTML";
 
 constexpr char kAdminHtmlV302[] PROGMEM =
-R"HTML(<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>网络收音机 4.6.0 管理</title><style>
-:root{color-scheme:dark}body{max-width:880px;margin:24px auto;padding:0 16px;background:#101827;color:#e5e7eb;font:16px system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif}section,pre,.station,.wifi-network{background:#172234;padding:14px;border-radius:10px;margin:14px 0}button,input,select{box-sizing:border-box;padding:9px;margin:4px;border:0;border-radius:6px}input,select{width:100%}button{background:#38bdf8;color:#062032;font-weight:700;cursor:pointer}.warn{background:#fbbf24}.danger{background:#fb7185}.station img,.station .fallback{display:inline-grid;width:48px;height:48px;object-fit:contain;object-position:center;background:#fff;border-radius:8px;vertical-align:middle;margin-right:10px}.station .fallback{place-items:center;background:#e89c27;color:#fff;font-weight:700}.station small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#b7c6da}.actions{display:block}.station button{min-width:82px;padding:11px 17px}.wifi-network{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px}.wifi-network b{overflow:hidden;text-overflow:ellipsis}.wifi-network button{width:auto;margin:0}.active{outline:2px solid #38bdf8}.state{font-size:1.1em;color:#67e8f9;margin-bottom:24px}.transport{display:flex;align-items:center;justify-content:center;gap:clamp(28px,8vw,72px);margin:18px 0 28px}.transport button{display:grid;place-items:center;margin:0}.skip{width:76px;height:64px;border-radius:18px;font-size:25px;background:#263449;color:#dce6f5}.play{width:92px;height:92px;border-radius:50%;font-size:36px;background:#f8fafc;color:#172234;box-shadow:0 10px 28px #0005}.volume-head{display:flex;justify-content:space-between;align-items:center;margin:0 6px 8px;color:#cbd5e1}.volume-head b{color:#fff;font-size:1.15em}.volume{width:calc(100% - 10px);accent-color:#38bdf8}.theme-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.theme-grid label{display:grid;gap:6px}.theme-grid input,.theme-grid select{margin:0}.theme-grid input[type=color]{height:54px;padding:4px;border:1px solid #ffffff26;border-radius:10px;background:#fff;color-scheme:light;cursor:pointer}.theme-grid input[type=color]::-webkit-color-swatch-wrapper{padding:0}.theme-grid input[type=color]::-webkit-color-swatch{border:0;border-radius:6px}.theme-grid input[type=color]::-moz-color-swatch{border:0;border-radius:6px}pre{overflow:auto;white-space:pre-wrap}a{color:#67e8f9}@media(max-width:560px){.theme-grid{grid-template-columns:1fr}.station{overflow-x:auto;white-space:nowrap}.station small{white-space:normal}.station button{min-width:auto;padding:9px 11px;margin:3px 2px}}</style></head>
+R"HTML(<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>网络收音机 4.7.5 管理</title><style>
+:root{color-scheme:dark}body{max-width:880px;margin:24px auto;padding:0 16px;background:#101827;color:#e5e7eb;font:16px system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif}section,pre,.station,.wifi-network{background:#172234;padding:14px;border-radius:10px;margin:14px 0}button,input,select{box-sizing:border-box;padding:9px;margin:4px;border:0;border-radius:6px}input,select{width:100%}button{background:#38bdf8;color:#062032;font-weight:700;cursor:pointer}button:disabled{opacity:.38;cursor:not-allowed}.warn{background:#fbbf24}.danger{background:#fb7185}.playlist-head,.station-group{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}.playlist-head h2,.station-group strong{margin:0}.station-group{margin:24px 2px 8px;padding:10px 12px;border:1px solid #263b55;border-radius:9px;color:#67e8f9;font-size:18px;font-weight:800}.group-actions{display:flex;flex-wrap:wrap;gap:3px}.group-actions button{min-width:auto;margin:0;padding:7px 10px;font-size:13px}.station{content-visibility:auto;contain-intrinsic-size:170px}.station img,.station .fallback{display:inline-grid;width:48px;height:48px;object-fit:contain;object-position:center;background:#fff;border-radius:8px;vertical-align:middle;margin-right:10px}.station .fallback{place-items:center;background:#e89c27;color:#fff;font-weight:700}.station small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#b7c6da}.actions{display:block}.station button{min-width:82px;padding:11px 17px}.wifi-network{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px}.wifi-network b{overflow:hidden;text-overflow:ellipsis}.wifi-network button{width:auto;margin:0}.active{outline:2px solid #38bdf8}.state{font-size:1.1em;color:#67e8f9;margin-bottom:24px}.transport{display:flex;align-items:center;justify-content:center;gap:clamp(28px,8vw,72px);margin:18px 0 28px}.transport button{display:grid;place-items:center;margin:0}.skip{width:76px;height:64px;border-radius:18px;font-size:25px;background:#263449;color:#dce6f5}.play{width:92px;height:92px;border-radius:50%;font-size:36px;background:#f8fafc;color:#172234;box-shadow:0 10px 28px #0005}.volume-head{display:flex;justify-content:space-between;align-items:center;margin:0 6px 8px;color:#cbd5e1}.volume-head b{color:#fff;font-size:1.15em}.volume{width:calc(100% - 10px);accent-color:#38bdf8}.theme-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.theme-grid label{display:grid;gap:6px}.theme-grid input,.theme-grid select{margin:0}.theme-grid input[type=color]{height:54px;padding:4px;border:1px solid #ffffff26;border-radius:10px;background:#fff;color-scheme:light;cursor:pointer}.theme-grid input[type=color]::-webkit-color-swatch-wrapper{padding:0}.theme-grid input[type=color]::-webkit-color-swatch{border:0;border-radius:6px}.theme-grid input[type=color]::-moz-color-swatch{border:0;border-radius:6px}pre{overflow:auto;white-space:pre-wrap}a{color:#67e8f9}@media(max-width:560px){.theme-grid{grid-template-columns:1fr}.playlist-head{align-items:flex-start}.station{overflow-x:auto;white-space:nowrap;contain-intrinsic-size:190px}.station small{white-space:normal}.station button{min-width:auto;padding:9px 11px;margin:3px 2px}.group-actions{width:100%}.group-actions button{flex:1}}</style></head>
 <body><h1>ESP32-S3 网络收音机</h1><p>版本号：)HTML"
 NETWORK_RADIO_VERSION
 R"HTML(　编译时间：)HTML"
@@ -3339,24 +4238,26 @@ R"HTML(　<a href="/">返回播放器</a></p>
 <section class="player"><h2>正在播放</h2><div id="now" class="state">读取中…</div><div class="transport"><button id="previous" class="skip" aria-label="上一台">◀◀</button><button id="play" class="play" aria-label="播放或暂停">▶</button><button id="next" class="skip" aria-label="下一台">▶▶</button></div><div class="volume-head"><span>音量</span><b><span id="volumeText">--</span>/21</b></div><input id="volume" class="volume" type="range" min="0" max="21"></section>
 <section><h2>用户页面外观</h2><div class="theme-grid"><label>页面颜色<input id="background" type="color" value="#656b6a"></label><label>强调颜色<input id="accent" type="color" value="#f2a51a"></label><label>纹理效果<select id="texture"><option value="none">无纹理</option><option value="dots">圆点</option><option value="grid">网格</option><option value="diagonal">斜纹</option><option value="cloud">祥云</option><option value="lattice">回纹窗格</option><option value="waves">水波</option><option value="bamboo">竹影</option><option value="ricepaper">宣纸</option><option value="porcelain">青花</option></select></label></div><button id="saveTheme">保存页面外观</button></section>
 <section><h2>RGB 播放灯效</h2><p>仅在正常播放时生效；缓冲、错误和 OTA 状态灯优先显示。</p><div class="theme-grid"><label>灯效<select id="ledEffect"><option value="rainbow">彩虹循环</option><option value="color_breathe">呼吸变色</option><option value="aurora">极光</option><option value="flame">火焰</option><option value="heartbeat">心跳</option><option value="meteor">流星</option><option value="pulse">脉冲</option><option value="random_fade">随机柔变</option><option value="music">音乐律动</option><option value="signal">状态渐变（Wi-Fi 信号）</option><option value="fixed_breathe">固定色呼吸</option><option value="temperature">色温变化</option><option value="starlight">闪烁星光</option></select></label><label>固定呼吸颜色<input id="ledFixedColor" type="color" value="#0080ff"></label></div><button id="saveLedEffect">保存 RGB 灯效</button></section>
-<section><h2>播放列表</h2><div id="stations">加载中…</div><h3 id="formTitle">新增电台</h3><input id="editId" type="hidden"><input id="stationName" placeholder="电台名称"><input id="stationUrl" placeholder="http(s):// 音频流地址"><button id="saveStation">保存</button><button id="cancelEdit" class="warn">取消编辑</button></section>
+<section><div class="playlist-head"><h2>播放列表</h2><button id="resetGroups" class="warn">恢复默认分组顺序</button></div><div id="stations">加载中…</div><h3 id="formTitle">新增电台</h3><input id="editId" type="hidden"><input id="stationName" placeholder="电台名称"><input id="stationUrl" placeholder="http(s):// 音频流地址"><button id="saveStation">保存</button><button id="cancelEdit" class="warn">取消编辑</button></section>
 <section><h2>Wi-Fi</h2><p>最多保存 5 个网络；启动时会选择信号最强且可连接的已保存网络。</p><div id="savedWifi">读取已保存网络…</div><button id="scanWifi">扫描网络</button><select id="ssid"><option value="">选择 Wi-Fi</option></select><input id="wifiPassword" type="password" placeholder="Wi-Fi 密码（更新同名网络时请重新填写）"><button id="saveWifi">保存网络并重启连接</button><button id="forgetWifi" class="warn">清除全部 Wi-Fi 设置</button></section>
 <section><h2>串口日志</h2><p>开关会立即生效并保存；关闭只停止串口输出，诊断日志仍会保留。</p><div id="serialLogs" style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px"><label style="display:flex;align-items:center;gap:8px"><input id="logSystem" type="checkbox" style="width:auto">系统 / 存储</label><label style="display:flex;align-items:center;gap:8px"><input id="logWifi" type="checkbox" style="width:auto">Wi-Fi</label><label style="display:flex;align-items:center;gap:8px"><input id="logAudio" type="checkbox" style="width:auto">音频 / 播放恢复</label><label style="display:flex;align-items:center;gap:8px"><input id="logTouch" type="checkbox" style="width:auto">触摸按键</label></div><small id="serialLogState">正在读取…</small></section>
 <section><h2>维护与安全</h2><button id="chooseFirmware">选择固件并升级</button><input id="firmware" type="file" accept=".bin" hidden><button id="chooseResources" class="warn">选择资源镜像并升级</button><input id="resources" type="file" accept=".bin" hidden><p><small>资源升级请选择构建目录中的 <code>littlefs.bin</code>。它会更新台标、开机提示音等 LittleFS 文件，不会清除 Wi-Fi、电台或管理密码。</small></p><button id="downloadLog">下载诊断日志</button><input id="adminPassword" type="password" placeholder="设置管理密码（8–63 位，用户名 admin）"><button id="savePassword">保存管理密码</button><button id="factoryReset" class="danger">恢复出厂设置</button><p>配网热点密码独立：<code>radio-setup</code></p></section><pre id="status">读取中…</pre>
 <script>
-const q=s=>document.querySelector(s),enc=o=>new URLSearchParams(o);let stations=[],selected=-1,playerState='stopped',playlistRevision=0,pollBusy=false,volumeTimer,pollCount=0;
+const q=s=>document.querySelector(s),enc=o=>new URLSearchParams(o);let stations=[],groups=[],selected=-1,playerState='stopped',playlistRevision=0,pollBusy=false,volumeTimer,pollCount=0;
 async function api(url,options){const r=await fetch(url,options);const t=await r.text();let d={};try{d=t?JSON.parse(t):{}}catch(_){d={error:t||'请求失败'}}if(!r.ok)throw Error(d.error||'请求失败');return d}
 function safeLogo(name){return typeof name==='string'&&/^[A-Za-z0-9._-]+$/.test(name)?'/logos/'+encodeURIComponent(name):''}
-function button(label,handler,style){const b=document.createElement('button');b.textContent=label;if(style)b.className=style;b.addEventListener('click',handler);return b}
-function stationImage(station){const image=document.createElement('img'),fallback=document.createElement('span'),url=safeLogo(station.logo);fallback.className='fallback';fallback.textContent=(station.name||'R').trim().slice(0,1).toUpperCase()||'R';if(!url){image.style.display='none'}else{fallback.style.display='none';image.onerror=()=>{image.style.display='none';fallback.style.display='grid'};image.src=url}return [image,fallback]}
-function renderStations(){const host=q('#stations');host.replaceChildren();stations.forEach(station=>{const row=document.createElement('article'),title=document.createElement('b'),url=document.createElement('small'),actions=document.createElement('div'),[image,fallback]=stationImage(station);row.className='station'+(station.id===selected?' active':'');row.dataset.stationId=String(station.id);title.textContent=station.name;url.textContent=station.url;actions.className='actions';actions.append(button('播放此台',()=>post('/api/stations/select?id='+station.id)),button('编辑',()=>editStation(station.id)),button('最前',()=>post('/api/stations/move?id='+station.id+'&direction=first')),button('↑',()=>post('/api/stations/move?id='+station.id+'&direction=up')),button('↓',()=>post('/api/stations/move?id='+station.id+'&direction=down')),button('最后',()=>post('/api/stations/move?id='+station.id+'&direction=last')),button('删除',()=>removeStation(station.id),'warn'));row.append(image,fallback,title,url,actions);host.append(row)});if(!stations.length){const p=document.createElement('p');p.textContent='暂无电台';host.append(p)}}
-function applyPlaylist(data){if(!Array.isArray(data.stations))return;stations=data.stations;selected=data.selected;playlistRevision=data.revision||playlistRevision;renderStations()}
+function button(label,handler,style,disabled=false){const b=document.createElement('button');b.textContent=label;if(style)b.className=style;b.disabled=disabled;b.addEventListener('click',handler);return b}
+function stationImage(station){const image=document.createElement('img'),fallback=document.createElement('span'),url=safeLogo(station.logo);image.loading='lazy';image.decoding='async';fallback.className='fallback';fallback.textContent=(station.name||'R').trim().slice(0,1).toUpperCase()||'R';if(!url){image.style.display='none'}else{fallback.style.display='none';image.onerror=()=>{image.style.display='none';fallback.style.display='grid'};image.src=url}return [image,fallback]}
+function stationRow(station){const row=document.createElement('article'),title=document.createElement('b'),url=document.createElement('small'),actions=document.createElement('div'),[image,fallback]=stationImage(station);row.className='station'+(station.id===selected?' active':'');row.dataset.stationId=String(station.id);title.textContent=station.name;url.textContent=station.url;actions.className='actions';actions.append(button('播放此台',()=>post('/api/stations/select?id='+station.id)),button('编辑',()=>editStation(station.id)),button('组内最前',()=>post('/api/stations/move?id='+station.id+'&direction=first')),button('↑',()=>post('/api/stations/move?id='+station.id+'&direction=up')),button('↓',()=>post('/api/stations/move?id='+station.id+'&direction=down')),button('组内最后',()=>post('/api/stations/move?id='+station.id+'&direction=last')),button('删除',()=>removeStation(station.id),'warn'));row.append(image,fallback,title,url,actions);return row}
+function renderStations(){const host=q('#stations');host.replaceChildren();const visible=groups.length?groups:Array.from(new Map(stations.map(s=>[s.group_id,{id:s.group_id,name:s.group,count:stations.filter(x=>x.group_id===s.group_id).length}])).values()),positions=new Map(visible.map((g,i)=>[g.id,i]));let groupId=null;stations.forEach(station=>{if(station.group_id!==groupId){groupId=station.group_id;const meta=visible.find(g=>g.id===groupId)||{id:groupId,name:station.group,count:0},position=positions.get(groupId)||0,heading=document.createElement('div'),label=document.createElement('strong'),controls=document.createElement('div');heading.className='station-group';label.textContent=meta.name+'（'+meta.count+'）';controls.className='group-actions';controls.append(button('最前',()=>postGroup('/api/station-groups/move?id='+meta.id+'&direction=first'),'',position===0),button('上移',()=>postGroup('/api/station-groups/move?id='+meta.id+'&direction=up'),'',position===0),button('下移',()=>postGroup('/api/station-groups/move?id='+meta.id+'&direction=down'),'',position===visible.length-1),button('最后',()=>postGroup('/api/station-groups/move?id='+meta.id+'&direction=last'),'',position===visible.length-1));heading.append(label,controls);host.append(heading)}host.append(stationRow(station))});if(!stations.length){const p=document.createElement('p');p.textContent='暂无电台';host.append(p)}}
+function applyPlaylist(data){if(!Array.isArray(data.stations))return;stations=data.stations;groups=Array.isArray(data.groups)?data.groups:[];selected=data.selected;playlistRevision=data.revision||playlistRevision;renderStations()}
 function applyPlayer(data){playerState=data.state||playerState;if(Number.isInteger(data.selected_station))selected=data.selected_station;if(Number.isInteger(data.volume)){q('#volume').value=data.volume;q('#volumeText').textContent=data.volume}const current=stations.find(s=>s.id===selected);q('#now').textContent=(data.state||'stopped')+' · '+(current?current.name:'网络收音机')+(data.message?' · '+data.message:'');q('#play').textContent=playerState==='playing'?'Ⅱ':'▶';document.querySelectorAll('.station').forEach(row=>row.classList.toggle('active',Number(row.dataset.stationId)===selected))}
 async function loadPlaylist(){applyPlaylist(await api('/api/stations'))}
-async function refreshPlayer(){const data=await api('/api/player/status');applyPlayer(data);if(data.playlist_revision!==playlistRevision)await loadPlaylist()}
+async function refreshPlayer(reloadPlaylist=true){const data=await api('/api/player/status');applyPlayer(data);if(reloadPlaylist&&data.playlist_revision!==playlistRevision)await loadPlaylist()}
 async function refreshStatus(){const data=await api('/api/status');q('#status').textContent=JSON.stringify(data,null,2)}
 async function poll(){if(pollBusy)return;pollBusy=true;try{await refreshPlayer();if(++pollCount%6===0)await refreshStatus()}catch(e){q('#status').textContent='错误：'+e.message}finally{pollBusy=false;setTimeout(poll,document.hidden?30000:5000)}}
 async function post(url){try{const data=await api(url,{method:'POST'});applyPlaylist(data);applyPlayer(data)}catch(e){alert(e.message)}}
+async function postGroup(url){try{await api(url,{method:'POST'});await loadPlaylist()}catch(e){try{await loadPlaylist()}catch(_){}alert(e.message)}}
 function editStation(id){const s=stations.find(x=>x.id===id);if(!s)return;q('#editId').value=id;q('#stationName').value=s.name;q('#stationUrl').value=s.url;q('#formTitle').textContent='编辑电台'}
 function clearForm(){q('#editId').value='';q('#stationName').value='';q('#stationUrl').value='';q('#formTitle').textContent='新增电台'}
 async function saveStation(){const id=q('#editId').value,body=enc({name:q('#stationName').value,url:q('#stationUrl').value});try{const data=await api(id===''?'/api/stations':'/api/stations/update?id='+encodeURIComponent(id),{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body});applyPlaylist(data);clearForm()}catch(e){alert(e.message)}}
@@ -3375,15 +4276,15 @@ async function saveSerialLogs(){q('#serialLogState').textContent='正在保存�
 async function savePassword(){try{await api('/api/security/password',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:enc({password:q('#adminPassword').value})});alert('管理密码已保存；请刷新页面并用 admin 登录。')}catch(e){alert(e.message)}}
 async function uploadFirmware(file){if(!file||!confirm('上传后设备会重启，继续？'))return;const form=new FormData;form.append('firmware',file);try{await api('/api/ota',{method:'POST',body:form});q('#status').textContent='升级完成，设备正在重启…'}catch(e){alert(e.message)}}
 async function uploadResources(file){if(!file||!confirm('资源将被替换，上传后设备会重启；Wi-Fi 与电台设置会保留。继续？'))return;const form=new FormData;form.append('resources',file);try{await api('/api/ota/resources',{method:'POST',body:form});q('#status').textContent='资源升级完成，设备正在重启…'}catch(e){alert(e.message)}}
-q('#previous').addEventListener('click',()=>post('/api/player/previous'));q('#play').addEventListener('click',()=>post(playerState==='playing'?'/api/player/stop':'/api/player/play'));q('#next').addEventListener('click',()=>post('/api/player/next'));q('#volume').addEventListener('input',e=>{q('#volumeText').textContent=e.target.value;clearTimeout(volumeTimer);volumeTimer=setTimeout(()=>post('/api/player/volume?value='+encodeURIComponent(e.target.value)),180)});q('#saveStation').addEventListener('click',saveStation);q('#cancelEdit').addEventListener('click',clearForm);q('#scanWifi').addEventListener('click',scanWifi);q('#saveWifi').addEventListener('click',saveWifi);q('#forgetWifi').addEventListener('click',()=>{if(confirm('清除全部已保存的 Wi-Fi？'))post('/api/wifi/forget')});q('#saveTheme').addEventListener('click',saveTheme);q('#saveLedEffect').addEventListener('click',saveLedSettings);['#logSystem','#logWifi','#logAudio','#logTouch'].forEach(id=>q(id).addEventListener('change',saveSerialLogs));q('#savePassword').addEventListener('click',savePassword);q('#chooseFirmware').addEventListener('click',()=>q('#firmware').click());q('#firmware').addEventListener('change',e=>uploadFirmware(e.target.files[0]));q('#chooseResources').addEventListener('click',()=>q('#resources').click());q('#resources').addEventListener('change',e=>uploadResources(e.target.files[0]));q('#downloadLog').addEventListener('click',()=>location='/api/diagnostics/download');q('#factoryReset').addEventListener('click',()=>{if(confirm('这将清除 Wi-Fi、电台、音量、页面外观、RGB 灯效和管理密码，确定？'))post('/api/factory-reset')});document.addEventListener('visibilitychange',()=>{if(!document.hidden)poll()});Promise.all([loadPlaylist(),refreshPlayer(),refreshStatus(),loadSavedWifi(),loadSerialLogs(),api('/api/ui-theme').then(t=>{q('#background').value=t.background;q('#accent').value=t.accent;q('#texture').value=t.texture}),api('/api/led-effect').then(applyLedSettings)]).then(poll).catch(e=>q('#status').textContent='错误：'+e.message);
+q('#previous').addEventListener('click',()=>post('/api/player/previous'));q('#play').addEventListener('click',()=>post(playerState==='playing'?'/api/player/stop':'/api/player/play'));q('#next').addEventListener('click',()=>post('/api/player/next'));q('#volume').addEventListener('input',e=>{q('#volumeText').textContent=e.target.value;clearTimeout(volumeTimer);volumeTimer=setTimeout(()=>post('/api/player/volume?value='+encodeURIComponent(e.target.value)),180)});q('#saveStation').addEventListener('click',saveStation);q('#cancelEdit').addEventListener('click',clearForm);q('#resetGroups').addEventListener('click',()=>{if(confirm('恢复默认分组顺序？组内电台顺序不会改变。'))postGroup('/api/station-groups/reset')});q('#scanWifi').addEventListener('click',scanWifi);q('#saveWifi').addEventListener('click',saveWifi);q('#forgetWifi').addEventListener('click',()=>{if(confirm('清除全部已保存的 Wi-Fi？'))post('/api/wifi/forget')});q('#saveTheme').addEventListener('click',saveTheme);q('#saveLedEffect').addEventListener('click',saveLedSettings);['#logSystem','#logWifi','#logAudio','#logTouch'].forEach(id=>q(id).addEventListener('change',saveSerialLogs));q('#savePassword').addEventListener('click',savePassword);q('#chooseFirmware').addEventListener('click',()=>q('#firmware').click());q('#firmware').addEventListener('change',e=>uploadFirmware(e.target.files[0]));q('#chooseResources').addEventListener('click',()=>q('#resources').click());q('#resources').addEventListener('change',e=>uploadResources(e.target.files[0]));q('#downloadLog').addEventListener('click',()=>location='/api/diagnostics/download');q('#factoryReset').addEventListener('click',()=>{if(confirm('这将清除 Wi-Fi、电台、音量、页面外观、RGB 灯效和管理密码，确定？'))post('/api/factory-reset')});document.addEventListener('visibilitychange',()=>{if(!document.hidden)poll()});(async()=>{try{await refreshPlayer(false);await loadPlaylist();applyPlayer({});await Promise.all([refreshStatus(),loadSavedWifi(),loadSerialLogs(),api('/api/ui-theme').then(t=>{q('#background').value=t.background;q('#accent').value=t.accent;q('#texture').value=t.texture}),api('/api/led-effect').then(applyLedSettings)]);poll()}catch(e){q('#status').textContent='错误：'+e.message}})();
 </script></body></html>
 )HTML";
 
 void configureWebServerV8() {
-  server.serveStatic("/logos/", LittleFS, "/logos/");
+  server.serveStatic("/logos/", LittleFS, "/logos/", "max-age=86400");
   server.on("/", HTTP_GET, [] { server.send_P(200, "text/html; charset=utf-8", kUserHtmlV301); });
   server.on("/admin", HTTP_GET, [] { if (requireAdmin()) server.send_P(200, "text/html; charset=utf-8", kAdminHtmlV302); });
-  server.on("/api/user/stations", HTTP_GET, [] { sendJson(userPlaylistJson()); });
+  server.on("/api/user/stations", HTTP_GET, [] { sendPlaylistJson(false); });
   server.on("/api/user/theme", HTTP_GET, [] { sendJson(uiThemeJson()); });
   server.on("/api/user/stations/select", HTTP_POST, handleUserSelectStation);
   server.on("/api/user/player/status", HTTP_GET, handleUserPlayerStatus);
@@ -3393,12 +4294,20 @@ void configureWebServerV8() {
   server.on("/api/user/player/previous", HTTP_POST, handleUserPrevious);
   server.on("/api/user/player/next", HTTP_POST, handleUserNext);
   server.on("/api/status", HTTP_GET, handleStatusV8);
-  server.on("/api/stations", HTTP_GET, [] { if (requireAdmin()) sendJson(playlistJson()); });
+  server.on("/api/stations", HTTP_GET, [] {
+    if (requireAdmin()) sendPlaylistJson(true);
+  });
   server.on("/api/stations", HTTP_POST, [] { if (requireAdmin()) handleAddStation(); });
   server.on("/api/stations/update", HTTP_POST, [] { if (requireAdmin()) handleUpdateStation(); });
   server.on("/api/stations/delete", HTTP_POST, [] { if (requireAdmin()) handleDeleteStation(); });
   server.on("/api/stations/select", HTTP_POST, [] { if (requireAdmin()) handleSelectStation(); });
   server.on("/api/stations/move", HTTP_POST, [] { if (requireAdmin()) handleMoveStationV11(); });
+  server.on("/api/station-groups/move", HTTP_POST, [] {
+    if (requireAdmin()) handleMoveStationGroup();
+  });
+  server.on("/api/station-groups/reset", HTTP_POST, [] {
+    if (requireAdmin()) handleResetStationGroups();
+  });
   server.on("/api/wifi/scan", HTTP_GET, [] { if (requireAdmin()) handleWifiScan(); });
   server.on("/api/wifi", HTTP_GET, [] { if (requireAdmin()) sendJson(savedWifiNetworksJson()); });
   server.on("/api/wifi", HTTP_POST, handleSaveWifi);
@@ -3450,11 +4359,16 @@ void setup() {
                       ? "mounted"
                       : "mount failed; using NVS fallback");
   loadPlaylist();
+  if (playlistFormatMigrationPending && persistPlaylist()) {
+    serialLogPrintln(kSerialLogSystemBit,
+                     "Playlist storage migrated to 16-bit station indexes.");
+    playlistFormatMigrationPending = false;
+  }
   migrateStationCatalog();
   importBuiltinStations();
-  const bool newsStationsAdded = importNewsStationPack();
+  const bool expandedStationsAdded = importExpandedStationPack();
   enrichStationIcons();
-  sortStationsByRegionOnce(newsStationsAdded);
+  initialiseStationGroups(expandedStationsAdded);
   loadUiTheme();
   loadLedSettings();
   playerPreferences.begin("player", true); playerVolume = playerPreferences.getUChar("volume", playerVolume); playerPreferences.end();
