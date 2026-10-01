@@ -1,5 +1,5 @@
 /*
- * Network Radio 4.8.1 standalone Arduino sketch.
+ * Network Radio 4.8.2 standalone Arduino sketch.
  * Project-local source dependencies are inlined in this file.
  *
  * The superseded V4 test-tone/I2S path and unused legacy web pages have
@@ -9,7 +9,7 @@
 
 /* Network Radio 3.0: player UI, administration UI, and WS2812B status LED. */
 
-#define NETWORK_RADIO_VERSION "4.8.1"
+#define NETWORK_RADIO_VERSION "4.8.2"
 #define NETWORK_RADIO_MAX_STATIONS 512
 #ifdef NETWORK_RADIO_NO_ENTRYPOINT
 #define NETWORK_RADIO_V8_NO_ENTRYPOINT
@@ -82,7 +82,7 @@ void audio_process_i2s(int32_t *outBuff, int16_t validSamples,
 
 namespace config {
 #ifndef NETWORK_RADIO_VERSION
-#define NETWORK_RADIO_VERSION "4.8.1"
+#define NETWORK_RADIO_VERSION "4.8.2"
 #endif
 constexpr char kFirmwareVersion[] = NETWORK_RADIO_VERSION;
 constexpr uint32_t kSerialBaud = 115200;
@@ -115,6 +115,7 @@ constexpr char kPlaylistNamespace[] = "playlist";
 constexpr char kPlaylistCountKey[] = "count";
 constexpr char kPlaylistSelectedKey[] = "selected";
 constexpr char kPlaylistSelected16Key[] = "selected16";
+constexpr char kPlaylistFavoriteContextKey[] = "favorite_ctx";
 constexpr char kPlaylistSequenceKey[] = "sequence";
 constexpr char kPlaylistBackendKey[] = "backend";
 constexpr uint8_t kPlaylistBackendLegacyNvs = 1;
@@ -238,6 +239,7 @@ const char *stationGroupName(const char *name);
 const char *stationGroupNameById(uint8_t id);
 bool regroupStationsInMemory();
 bool persistStationGroupOrder();
+bool persistSelectedStation();
 void loadFavoriteStations();
 
 uint16_t setupAccessPointId() {
@@ -417,6 +419,21 @@ void loadFavoriteStations() {
     favoriteStationCount = output;
     persistFavoriteStations();
   }
+}
+
+void loadFavoritePlaybackContext() {
+  favoritePlaybackContext = false;
+  if (!preferences.begin(config::kPlaylistNamespace, true)) return;
+  favoritePlaybackContext =
+      preferences.getBool(config::kPlaylistFavoriteContextKey, false);
+  preferences.end();
+}
+
+void validateFavoritePlaybackContext() {
+  if (!favoritePlaybackContext) return;
+  if (stationCount > 0 && favoriteStationPosition(selectedStation) >= 0) return;
+  favoritePlaybackContext = false;
+  persistSelectedStation();
 }
 
 uint32_t playlistChecksum(uint16_t count, uint16_t selected,
@@ -622,6 +639,8 @@ bool retireLegacyPlaylist() {
   const bool saved = preferences.clear() &&
                      preferences.putUShort(config::kPlaylistSelected16Key,
                                             selectedStation) == sizeof(uint16_t) &&
+                     preferences.putBool(config::kPlaylistFavoriteContextKey,
+                                         favoritePlaybackContext) == 1 &&
                      preferences.putUInt(config::kPlaylistSequenceKey,
                                          playlistSequence) == sizeof(uint32_t);
   preferences.end();
@@ -636,7 +655,9 @@ bool persistLegacyPlaylist() {
                preferences.putUChar(config::kPlaylistCountKey,
                                     static_cast<uint8_t>(stationCount)) == 1 &&
                preferences.putUChar(config::kPlaylistSelectedKey,
-                                    static_cast<uint8_t>(selectedStation)) == 1;
+                                    static_cast<uint8_t>(selectedStation)) == 1 &&
+               preferences.putBool(config::kPlaylistFavoriteContextKey,
+                                   favoritePlaybackContext) == 1;
   for (uint16_t index = 0; saved && index < stationCount; ++index) {
     const String entry = String(stations[index].name) + '\n' +
                          stations[index].url + '\n' + stations[index].logo;
@@ -672,6 +693,8 @@ bool persistPlaylistState() {
   if (!preferences.begin(config::kPlaylistNamespace, false)) return false;
   const bool saved = preferences.putUShort(config::kPlaylistSelected16Key,
                                             selectedStation) == sizeof(uint16_t) &&
+                     preferences.putBool(config::kPlaylistFavoriteContextKey,
+                                         favoritePlaybackContext) == 1 &&
                      preferences.putUInt(config::kPlaylistSequenceKey,
                                          playlistSequence) == sizeof(uint32_t);
   preferences.end();
@@ -1354,7 +1377,13 @@ void handleDeleteStation() {
       serialLogPrintln(kSerialLogSystemBit,
                        "WARN: Could not remove deleted station from favorites.");
     }
-    if (id == previousSelection) favoritePlaybackContext = false;
+    if (id == previousSelection) {
+      favoritePlaybackContext = false;
+      if (!persistSelectedStation()) {
+        serialLogPrintln(kSerialLogSystemBit,
+                         "WARN: Could not clear favorite playback context.");
+      }
+    }
   }
   if (saved) sendPlaylistJson(true);
   else sendJson("{\"error\":\"could not save playlist\"}", 500);
@@ -1367,12 +1396,14 @@ void handleSelectStation() {
     return;
   }
   const uint16_t previousSelection = selectedStation;
+  const bool previousFavoriteContext = favoritePlaybackContext;
   selectedStation = id;
+  favoritePlaybackContext = server.arg("context") == "favorites" &&
+                            favoriteStationPosition(selectedStation) >= 0;
   const bool saved = persistSelectedStation();
-  if (!saved) selectedStation = previousSelection;
-  if (saved) {
-    favoritePlaybackContext = server.arg("context") == "favorites" &&
-                              favoriteStationPosition(selectedStation) >= 0;
+  if (!saved) {
+    selectedStation = previousSelection;
+    favoritePlaybackContext = previousFavoriteContext;
   }
   if (saved && onStationSelected != nullptr) {
     onStationSelected(selectedStation);
@@ -3847,12 +3878,14 @@ void handleUserSelectStation() {
     sendJson("{\"error\":\"invalid station id\"}", 400);
     return;
   }
+  const bool previousFavoriteContext = favoritePlaybackContext;
+  favoritePlaybackContext = server.arg("context") == "favorites" &&
+                            favoriteStationPosition(id) >= 0;
   if (!selectStationForUser(id, "station selected from user page")) {
+    favoritePlaybackContext = previousFavoriteContext;
     sendJson("{\"error\":\"could not save selected station\"}", 500);
     return;
   }
-  favoritePlaybackContext = server.arg("context") == "favorites" &&
-                            favoriteStationPosition(selectedStation) >= 0;
   sendUserPlayerStatus();
 }
 
@@ -4053,6 +4086,10 @@ void handleSetFavoriteStation() {
   }
   if (action == "remove" && id == selectedStation) {
     favoritePlaybackContext = false;
+    if (!persistSelectedStation()) {
+      serialLogPrintln(kSerialLogSystemBit,
+                       "WARN: Could not clear favorite playback context.");
+    }
   }
   markPlaylistChanged();
   sendPlaylistJson(true);
@@ -4474,7 +4511,7 @@ document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh()}
 )HTML";
 
 constexpr char kAdminHtmlV302[] PROGMEM =
-R"HTML(<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>网络收音机 4.8.1 管理</title><style>
+R"HTML(<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>网络收音机 4.8.2 管理</title><style>
 :root{color-scheme:dark}body{max-width:880px;margin:24px auto;padding:0 16px;background:#101827;color:#e5e7eb;font:16px system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif}section,pre,.station,.wifi-network{background:#172234;padding:14px;border-radius:10px;margin:14px 0}button,input,select{box-sizing:border-box;padding:9px;margin:4px;border:0;border-radius:6px}input,select{width:100%}button{background:#38bdf8;color:#062032;font-weight:700;cursor:pointer}button:disabled{opacity:.38;cursor:not-allowed}.warn{background:#fbbf24}.danger{background:#fb7185}.playlist-head,.station-group{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}.playlist-head h2,.station-group strong{margin:0}.station-group{margin:24px 2px 8px;padding:10px 12px;border:1px solid #263b55;border-radius:9px;color:#67e8f9;font-size:18px;font-weight:800}.group-actions{display:flex;flex-wrap:wrap;gap:3px}.group-actions button{min-width:auto;margin:0;padding:7px 10px;font-size:13px}.station{content-visibility:auto;contain-intrinsic-size:170px}.station img,.station .fallback{display:inline-grid;width:48px;height:48px;object-fit:contain;object-position:center;background:#fff;border-radius:8px;vertical-align:middle;margin-right:10px}.station .fallback{place-items:center;background:#e89c27;color:#fff;font-weight:700}.station small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#b7c6da}.actions{display:block}.station button{min-width:82px;padding:11px 17px}.wifi-network{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px}.wifi-network b{overflow:hidden;text-overflow:ellipsis}.wifi-network button{width:auto;margin:0}.active{outline:2px solid #38bdf8}.state{font-size:1.1em;color:#67e8f9;margin-bottom:24px}.transport{display:flex;align-items:center;justify-content:center;gap:clamp(28px,8vw,72px);margin:18px 0 28px}.transport button{display:grid;place-items:center;margin:0}.skip{width:76px;height:64px;border-radius:18px;font-size:25px;background:#263449;color:#dce6f5}.play{width:92px;height:92px;border-radius:50%;font-size:36px;background:#f8fafc;color:#172234;box-shadow:0 10px 28px #0005}.volume-head{display:flex;justify-content:space-between;align-items:center;margin:0 6px 8px;color:#cbd5e1}.volume-head b{color:#fff;font-size:1.15em}.volume{width:calc(100% - 10px);accent-color:#38bdf8}.theme-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.theme-grid label{display:grid;gap:6px}.theme-grid input,.theme-grid select{margin:0}.theme-grid input[type=color]{height:54px;padding:4px;border:1px solid #ffffff26;border-radius:10px;background:#fff;color-scheme:light;cursor:pointer}.theme-grid input[type=color]::-webkit-color-swatch-wrapper{padding:0}.theme-grid input[type=color]::-webkit-color-swatch{border:0;border-radius:6px}.theme-grid input[type=color]::-moz-color-swatch{border:0;border-radius:6px}pre{overflow:auto;white-space:pre-wrap}a{color:#67e8f9}@media(max-width:560px){.theme-grid{grid-template-columns:1fr}.playlist-head{align-items:flex-start}.station{overflow-x:auto;white-space:nowrap;contain-intrinsic-size:190px}.station small{white-space:normal}.station button{min-width:auto;padding:9px 11px;margin:3px 2px}.group-actions{width:100%}.group-actions button{flex:1}}</style></head>
 <body><h1>ESP32-S3 网络收音机</h1><p>版本号：)HTML"
 NETWORK_RADIO_VERSION
@@ -4612,6 +4649,7 @@ void setup() {
                       ? "mounted"
                       : "mount failed; using NVS fallback");
   loadPlaylist();
+  loadFavoritePlaybackContext();
   if (playlistFormatMigrationPending && persistPlaylist()) {
     serialLogPrintln(kSerialLogSystemBit,
                      "Playlist storage migrated to 16-bit station indexes.");
@@ -4623,6 +4661,7 @@ void setup() {
   enrichStationIcons();
   initialiseStationGroups(expandedStationsAdded);
   loadFavoriteStations();
+  validateFavoritePlaybackContext();
   loadUiTheme();
   loadLedSettings();
   playerPreferences.begin("player", true); playerVolume = playerPreferences.getUChar("volume", playerVolume); playerPreferences.end();
