@@ -1,5 +1,5 @@
 /*
- * Network Radio 4.7.5 standalone Arduino sketch.
+ * Network Radio 4.8.0 standalone Arduino sketch.
  * Project-local source dependencies are inlined in this file.
  *
  * The superseded V4 test-tone/I2S path and unused legacy web pages have
@@ -9,7 +9,7 @@
 
 /* Network Radio 3.0: player UI, administration UI, and WS2812B status LED. */
 
-#define NETWORK_RADIO_VERSION "4.7.5"
+#define NETWORK_RADIO_VERSION "4.8.0"
 #define NETWORK_RADIO_MAX_STATIONS 512
 #ifdef NETWORK_RADIO_NO_ENTRYPOINT
 #define NETWORK_RADIO_V8_NO_ENTRYPOINT
@@ -82,7 +82,7 @@ void audio_process_i2s(int32_t *outBuff, int16_t validSamples,
 
 namespace config {
 #ifndef NETWORK_RADIO_VERSION
-#define NETWORK_RADIO_VERSION "4.7.5"
+#define NETWORK_RADIO_VERSION "4.8.0"
 #endif
 constexpr char kFirmwareVersion[] = NETWORK_RADIO_VERSION;
 constexpr uint32_t kSerialBaud = 115200;
@@ -200,6 +200,8 @@ uint32_t playlistSequence = 0;
 uint32_t playlistRevision = 1;
 
 constexpr uint8_t kOtherStationGroupId = 250;
+constexpr uint8_t kFavoriteStationGroupId = 255;
+constexpr char kFavoriteStationsKey[] = "favorites_v1";
 constexpr uint8_t kDefaultStationGroupOrder[] = {
   0, 1, 2, 3, 4, 5, 6,
   20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34,
@@ -210,6 +212,9 @@ constexpr uint8_t kStationGroupCapacity = sizeof(kDefaultStationGroupOrder);
 uint8_t stationGroupOrder[kStationGroupCapacity] = {};
 uint8_t stationGroupOrderCount = 0;
 bool stationGroupOrderLoaded = false;
+uint32_t favoriteStationKeys[config::kMaxStations] = {};
+uint16_t favoriteStationCount = 0;
+bool favoritePlaybackContext = false;
 
 char accessPointSsid[20] = {};
 bool accessPointRunning = false;
@@ -233,6 +238,7 @@ const char *stationGroupName(const char *name);
 const char *stationGroupNameById(uint8_t id);
 bool regroupStationsInMemory();
 bool persistStationGroupOrder();
+void loadFavoriteStations();
 
 uint16_t setupAccessPointId() {
   // Arduino represents ESP.getEfuseMac() little-endian; B8:1F:... -> 1FB8.
@@ -324,6 +330,93 @@ uint32_t playlistChecksumUpdate(uint32_t value, const void *data, size_t length)
     value *= 16777619UL;
   }
   return value;
+}
+
+uint32_t stationFavoriteKey(const Station &station) {
+  return playlistChecksumUpdate(2166136261UL, station.url,
+                                strlen(station.url));
+}
+
+int favoriteStationIndexForKey(uint32_t key) {
+  for (uint16_t index = 0; index < stationCount; ++index) {
+    if (stationFavoriteKey(stations[index]) == key) return index;
+  }
+  return -1;
+}
+
+int favoriteStationPosition(uint16_t stationIndex) {
+  const uint32_t key = stationFavoriteKey(stations[stationIndex]);
+  for (uint16_t index = 0; index < favoriteStationCount; ++index) {
+    if (favoriteStationKeys[index] == key) return index;
+  }
+  return -1;
+}
+
+uint16_t adjacentStationIndex(bool previous) {
+  const int favoritePosition = favoriteStationPosition(selectedStation);
+  if (favoritePlaybackContext && favoritePosition >= 0 &&
+      favoriteStationCount > 0) {
+    const uint16_t position = static_cast<uint16_t>(favoritePosition);
+    const uint16_t targetPosition = previous
+        ? (position == 0 ? favoriteStationCount - 1 : position - 1)
+        : (position + 1) % favoriteStationCount;
+    const int target =
+        favoriteStationIndexForKey(favoriteStationKeys[targetPosition]);
+    if (target >= 0) return static_cast<uint16_t>(target);
+  }
+  return previous
+      ? (selectedStation == 0 ? stationCount - 1 : selectedStation - 1)
+      : (selectedStation + 1) % stationCount;
+}
+
+bool persistFavoriteStations() {
+  Preferences catalogPreferences;
+  if (!catalogPreferences.begin("catalog", false)) return false;
+  bool saved = true;
+  if (favoriteStationCount == 0) {
+    if (catalogPreferences.isKey(kFavoriteStationsKey)) {
+      saved = catalogPreferences.remove(kFavoriteStationsKey);
+    }
+  } else {
+    const size_t length = favoriteStationCount * sizeof(uint32_t);
+    saved = catalogPreferences.putBytes(kFavoriteStationsKey,
+                                         favoriteStationKeys, length) == length;
+  }
+  catalogPreferences.end();
+  return saved;
+}
+
+void loadFavoriteStations() {
+  favoriteStationCount = 0;
+  Preferences catalogPreferences;
+  if (!catalogPreferences.begin("catalog", true)) return;
+  const size_t storedLength =
+      catalogPreferences.getBytesLength(kFavoriteStationsKey);
+  const size_t readLength =
+      storedLength > 0 && storedLength <= sizeof(favoriteStationKeys) &&
+              storedLength % sizeof(uint32_t) == 0
+          ? catalogPreferences.getBytes(kFavoriteStationsKey,
+                                        favoriteStationKeys, storedLength)
+          : 0;
+  catalogPreferences.end();
+  favoriteStationCount = readLength / sizeof(uint32_t);
+
+  uint16_t output = 0;
+  for (uint16_t input = 0; input < favoriteStationCount; ++input) {
+    if (favoriteStationIndexForKey(favoriteStationKeys[input]) < 0) continue;
+    bool duplicate = false;
+    for (uint16_t prior = 0; prior < output; ++prior) {
+      if (favoriteStationKeys[prior] == favoriteStationKeys[input]) {
+        duplicate = true;
+        break;
+      }
+    }
+    if (!duplicate) favoriteStationKeys[output++] = favoriteStationKeys[input];
+  }
+  if (output != favoriteStationCount) {
+    favoriteStationCount = output;
+    persistFavoriteStations();
+  }
 }
 
 uint32_t playlistChecksum(uint16_t count, uint16_t selected,
@@ -739,7 +832,10 @@ void sendPlaylistJson(bool includeUrls, int statusCode = 200) {
                  ",\"selected\":" + String(selectedStation) +
                  ",\"groups\":[";
   chunk.reserve(1024);
-  bool firstGroup = true;
+  chunk += "{\"id\":" + String(kFavoriteStationGroupId) +
+           ",\"name\":\"收藏\",\"count\":" +
+           String(favoriteStationCount) + "}";
+  bool firstGroup = false;
   for (uint8_t order = 0; order < stationGroupOrderCount; ++order) {
     const uint8_t groupId = stationGroupOrder[order];
     if (groupCounts[groupId] == 0) continue;
@@ -770,6 +866,16 @@ void sendPlaylistJson(bool includeUrls, int statusCode = 200) {
       server.sendContent(chunk);
       chunk = "";
     }
+  }
+  chunk += "],\"favorites\":[";
+  bool firstFavorite = true;
+  for (uint16_t position = 0; position < favoriteStationCount; ++position) {
+    const int stationIndex =
+        favoriteStationIndexForKey(favoriteStationKeys[position]);
+    if (stationIndex < 0) continue;
+    if (!firstFavorite) chunk += ',';
+    firstFavorite = false;
+    chunk += String(stationIndex);
   }
   chunk += "]}";
   server.sendContent(chunk);
@@ -1185,12 +1291,24 @@ void handleUpdateStation() {
   }
   memcpy(previousStations, stations, stationCount * sizeof(Station));
   const uint16_t previousSelection = selectedStation;
+  const int favoritePosition = favoriteStationPosition(id);
+  const uint32_t previousFavoriteKey =
+      favoritePosition >= 0 ? favoriteStationKeys[favoritePosition] : 0;
   strlcpy(stations[id].name, name.c_str(), sizeof(stations[id].name));
   strlcpy(stations[id].url, url.c_str(), sizeof(stations[id].url));
-  const bool saved = regroupStationsInMemory() && persistPlaylist();
+  bool saved = regroupStationsInMemory() && persistPlaylist();
+  if (saved && favoritePosition >= 0) {
+    favoriteStationKeys[favoritePosition] =
+        playlistChecksumUpdate(2166136261UL, url.c_str(), url.length());
+    saved = persistFavoriteStations();
+  }
   if (!saved) {
     memcpy(stations, previousStations, stationCount * sizeof(Station));
     selectedStation = previousSelection;
+    if (favoritePosition >= 0) {
+      favoriteStationKeys[favoritePosition] = previousFavoriteKey;
+    }
+    persistPlaylist();
   }
   free(previousStations);
   if (saved) sendPlaylistJson(true);
@@ -1204,6 +1322,7 @@ void handleDeleteStation() {
     return;
   }
   const uint16_t previousSelection = selectedStation;
+  const int favoritePosition = favoriteStationPosition(id);
   const Station removed = stations[id];
   for (uint16_t index = id; index + 1 < stationCount; ++index) {
     stations[index] = stations[index + 1];
@@ -1224,6 +1343,19 @@ void handleDeleteStation() {
     ++stationCount;
     selectedStation = previousSelection;
   }
+  if (saved && favoritePosition >= 0) {
+    for (uint16_t index = favoritePosition;
+         index + 1 < favoriteStationCount; ++index) {
+      favoriteStationKeys[index] = favoriteStationKeys[index + 1];
+    }
+    --favoriteStationCount;
+    favoriteStationKeys[favoriteStationCount] = 0;
+    if (!persistFavoriteStations()) {
+      serialLogPrintln(kSerialLogSystemBit,
+                       "WARN: Could not remove deleted station from favorites.");
+    }
+    if (id == previousSelection) favoritePlaybackContext = false;
+  }
   if (saved) sendPlaylistJson(true);
   else sendJson("{\"error\":\"could not save playlist\"}", 500);
 }
@@ -1238,6 +1370,10 @@ void handleSelectStation() {
   selectedStation = id;
   const bool saved = persistSelectedStation();
   if (!saved) selectedStation = previousSelection;
+  if (saved) {
+    favoritePlaybackContext = server.arg("context") == "favorites" &&
+                              favoriteStationPosition(selectedStation) >= 0;
+  }
   if (saved && onStationSelected != nullptr) {
     onStationSelected(selectedStation);
   }
@@ -3331,7 +3467,7 @@ void handlePlayerPreviousV9() {
   if (!requireAdmin()) return;
   if (stationCount == 0) { sendJson("{\"error\":\"playlist is empty\"}", 409); return; }
   const uint16_t previousSelection = selectedStation;
-  selectedStation = selectedStation == 0 ? stationCount - 1 : selectedStation - 1;
+  selectedStation = adjacentStationIndex(true);
   if (!persistSelectedStation()) {
     selectedStation = previousSelection;
     sendJson("{\"error\":\"could not save selected station\"}", 500);
@@ -3352,7 +3488,7 @@ void handlePlayerNextV9() {
   if (!requireAdmin()) return;
   if (stationCount == 0) { sendJson("{\"error\":\"playlist is empty\"}", 409); return; }
   const uint16_t previousSelection = selectedStation;
-  selectedStation = (selectedStation + 1) % stationCount;
+  selectedStation = adjacentStationIndex(false);
   if (!persistSelectedStation()) {
     selectedStation = previousSelection;
     sendJson("{\"error\":\"could not save selected station\"}", 500);
@@ -3611,9 +3747,7 @@ void pollTouchButtons() {
     return;
   }
 
-  const uint16_t target = previousPressed
-      ? (selectedStation == 0 ? stationCount - 1 : selectedStation - 1)
-      : (selectedStation + 1) % stationCount;
+  const uint16_t target = adjacentStationIndex(previousPressed);
   const char *reason = previousPressed ? "previous station from touch"
                                        : "next station from touch";
   if (touchDebugEnabled) {
@@ -3713,6 +3847,8 @@ void handleUserSelectStation() {
     sendJson("{\"error\":\"could not save selected station\"}", 500);
     return;
   }
+  favoritePlaybackContext = server.arg("context") == "favorites" &&
+                            favoriteStationPosition(selectedStation) >= 0;
   sendUserPlayerStatus();
 }
 
@@ -3738,7 +3874,7 @@ void handleUserStop() {
 
 void handleUserPrevious() {
   if (stationCount == 0) { sendJson("{\"error\":\"playlist is empty\"}", 409); return; }
-  const uint16_t target = selectedStation == 0 ? stationCount - 1 : selectedStation - 1;
+  const uint16_t target = adjacentStationIndex(true);
   if (!selectStationForUser(target, "previous station from user page")) {
     sendJson("{\"error\":\"could not save selected station\"}", 500);
     return;
@@ -3748,7 +3884,7 @@ void handleUserPrevious() {
 
 void handleUserNext() {
   if (stationCount == 0) { sendJson("{\"error\":\"playlist is empty\"}", 409); return; }
-  const uint16_t target = (selectedStation + 1) % stationCount;
+  const uint16_t target = adjacentStationIndex(false);
   if (!selectStationForUser(target, "next station from user page")) {
     sendJson("{\"error\":\"could not save selected station\"}", 500);
     return;
@@ -3870,6 +4006,112 @@ void handleMoveStationV11() {
   }
   if (saved) sendPlaylistJson(true);
   else sendJson("{\"error\":\"could not save playlist\"}", 500);
+}
+
+void handleSetFavoriteStation() {
+  uint16_t id;
+  if (!parseStationId(id)) {
+    sendJson("{\"error\":\"invalid station id\"}", 400);
+    return;
+  }
+  const String action = server.arg("action");
+  if (action != "add" && action != "remove") {
+    sendJson("{\"error\":\"invalid favorite action\"}", 400);
+    return;
+  }
+
+  const int current = favoriteStationPosition(id);
+  if ((action == "add" && current >= 0) ||
+      (action == "remove" && current < 0)) {
+    sendPlaylistJson(true);
+    return;
+  }
+  uint32_t previous[config::kMaxStations] = {};
+  memcpy(previous, favoriteStationKeys,
+         favoriteStationCount * sizeof(uint32_t));
+  const uint16_t previousCount = favoriteStationCount;
+  if (action == "add") {
+    favoriteStationKeys[favoriteStationCount++] =
+        stationFavoriteKey(stations[id]);
+  } else {
+    for (uint16_t index = current; index + 1 < favoriteStationCount; ++index) {
+      favoriteStationKeys[index] = favoriteStationKeys[index + 1];
+    }
+    --favoriteStationCount;
+    favoriteStationKeys[favoriteStationCount] = 0;
+  }
+  if (!persistFavoriteStations()) {
+    memcpy(favoriteStationKeys, previous,
+           previousCount * sizeof(uint32_t));
+    favoriteStationCount = previousCount;
+    sendJson("{\"error\":\"could not save favorites\"}", 500);
+    return;
+  }
+  if (action == "remove" && id == selectedStation) {
+    favoritePlaybackContext = false;
+  }
+  markPlaylistChanged();
+  sendPlaylistJson(true);
+}
+
+void handleMoveFavoriteStation() {
+  uint16_t id;
+  if (!parseStationId(id)) {
+    sendJson("{\"error\":\"invalid station id\"}", 400);
+    return;
+  }
+  const int currentValue = favoriteStationPosition(id);
+  if (currentValue < 0) {
+    sendJson("{\"error\":\"station is not a favorite\"}", 409);
+    return;
+  }
+  const String direction = server.arg("direction");
+  const uint16_t current = static_cast<uint16_t>(currentValue);
+  uint16_t target = current;
+  if (direction == "first") target = 0;
+  else if (direction == "up" && current > 0) target = current - 1;
+  else if (direction == "down" && current + 1 < favoriteStationCount) {
+    target = current + 1;
+  } else if (direction == "last") target = favoriteStationCount - 1;
+  else if (direction != "up" && direction != "down") {
+    sendJson("{\"error\":\"invalid move direction\"}", 400);
+    return;
+  } else {
+    sendJson("{\"error\":\"favorite cannot move farther\"}", 409);
+    return;
+  }
+  if (target == current) {
+    sendPlaylistJson(true);
+    return;
+  }
+
+  const uint32_t moved = favoriteStationKeys[current];
+  if (target < current) {
+    for (uint16_t index = current; index > target; --index) {
+      favoriteStationKeys[index] = favoriteStationKeys[index - 1];
+    }
+  } else {
+    for (uint16_t index = current; index < target; ++index) {
+      favoriteStationKeys[index] = favoriteStationKeys[index + 1];
+    }
+  }
+  favoriteStationKeys[target] = moved;
+  if (!persistFavoriteStations()) {
+    if (target < current) {
+      for (uint16_t index = target; index < current; ++index) {
+        favoriteStationKeys[index] = favoriteStationKeys[index + 1];
+      }
+    } else {
+      for (uint16_t index = target; index > current; --index) {
+        favoriteStationKeys[index] = favoriteStationKeys[index - 1];
+      }
+    }
+    favoriteStationKeys[current] = moved;
+    sendJson("{\"error\":\"could not save favorite order\"}", 500);
+    return;
+  }
+  markPlaylistChanged();
+  sendPlaylistJson(true);
 }
 
 bool parseStationGroupId(uint8_t &id) {
@@ -4209,18 +4451,18 @@ constexpr char kUserHtmlV301[] PROGMEM = R"HTML(
 <body><main class="app"><a class="settings" href="/admin" aria-label="进入管理页面" title="设置">⚙</a><section class="hero"><div class="cover-wrap"><img id="cover" class="cover" alt="当前电台台标"><div id="coverFallback" class="cover-fallback">R</div></div><div id="stationName" class="station-name">加载中…</div><div id="state" class="state">正在连接设备</div></section><div id="progress" class="progress"><i></i></div><nav class="controls" aria-label="播放控制"><button id="previous" aria-label="上一台">◀</button><button id="play" class="play" aria-label="播放或暂停">▶</button><button id="next" aria-label="下一台">▶</button></nav><div class="volume"><span>🔉</span><input id="volume" type="range" min="0" max="21" aria-label="音量"><span>🔊</span></div><div class="list-title"><h2>电台列表</h2><span id="count" class="count"></span></div><section id="stations" class="station-list"></section></main>
 <script>
 const q=s=>document.querySelector(s),textureStyles={none:['none','auto'],dots:['radial-gradient(#ffffff24 1px,transparent 1px)','18px 18px'],grid:['linear-gradient(#ffffff16 1px,transparent 1px),linear-gradient(90deg,#ffffff16 1px,transparent 1px)','24px 24px'],diagonal:['repeating-linear-gradient(135deg,#ffffff0d 0 2px,transparent 2px 12px)','auto'],cloud:['radial-gradient(circle at 12px 14px,transparent 9px,#ffffff1f 10px 11px,transparent 12px),radial-gradient(circle at 28px 14px,transparent 9px,#ffffff1f 10px 11px,transparent 12px)','40px 28px'],lattice:['linear-gradient(45deg,#ffffff14 12.5%,transparent 12.5% 37.5%,#ffffff14 37.5% 62.5%,transparent 62.5% 87.5%,#ffffff14 87.5%)','32px 32px'],waves:['radial-gradient(ellipse at 50% 100%,transparent 11px,#ffffff1c 12px 13px,transparent 14px)','34px 18px'],bamboo:['repeating-linear-gradient(90deg,transparent 0 30px,#ffffff16 31px 33px,transparent 34px 62px),repeating-linear-gradient(0deg,transparent 0 54px,#ffffff0d 55px 57px,transparent 58px 86px)','64px 88px'],ricepaper:['linear-gradient(25deg,#ffffff0a 1px,transparent 1px),linear-gradient(115deg,#ffffff08 1px,transparent 1px)','37px 53px,41px 47px'],porcelain:['radial-gradient(circle at 0 0,transparent 15px,#ffffff20 16px 17px,transparent 18px),radial-gradient(circle at 100% 100%,transparent 15px,#ffffff20 16px 17px,transparent 18px)','40px 40px']};
-let stations=[],selected=-1,playerState='stopped',playlistRevision=0,refreshBusy=false,volumeTimer;
+let stations=[],favorites=[],selected=-1,playerState='stopped',playlistRevision=0,refreshBusy=false,volumeTimer;
 async function api(url,options){const r=await fetch(url,options);const t=await r.text();let d={};try{d=t?JSON.parse(t):{}}catch(_){d={error:t||'请求失败'}}if(!r.ok)throw Error(d.error||'请求失败');return d}
 function safeLogo(name){return typeof name==='string'&&/^[A-Za-z0-9._-]+$/.test(name)?'/logos/'+encodeURIComponent(name):''}
 function setImage(image,fallback,station){const name=(station&&station.name||'R').trim().slice(0,1).toUpperCase();fallback.textContent=name||'R';const url=safeLogo(station&&station.logo);if(!url){image.style.display='none';fallback.style.display='grid';return}image.style.display='block';fallback.style.display='none';image.onerror=()=>{image.style.display='none';fallback.style.display='grid'};image.src=url}
 function updateRows(){document.querySelectorAll('[data-station-id]').forEach(row=>row.classList.toggle('active',Number(row.dataset.stationId)===selected))}
 function renderNow(){const station=stations.find(s=>s.id===selected)||{name:'网络收音机',logo:''};q('#stationName').textContent=station.name;q('#play').textContent=playerState==='playing'?'Ⅱ':'▶';q('#state').textContent=({playing:'正在播放',buffering_or_reconnecting:'正在缓冲',stopped:'已暂停'})[playerState]||'正在恢复连接';q('#progress').classList.toggle('busy',playerState!=='playing'&&playerState!=='stopped');setImage(q('#cover'),q('#coverFallback'),station);updateRows()}
-function stationButton(station){const row=document.createElement('button'),img=document.createElement('img'),fallback=document.createElement('span'),text=document.createElement('span'),name=document.createElement('b');row.className='station';row.dataset.stationId=station.id;row.addEventListener('click',()=>selectStation(station.id));img.loading='lazy';img.decoding='async';fallback.className='fallback';name.textContent=station.name;text.append(name);if(station.id===selected){const hint=document.createElement('small');hint.textContent='当前电台';text.append(hint)}setImage(img,fallback,station);row.append(img,fallback,text);return row}
-function renderStations(){const host=q('#stations');host.replaceChildren();q('#count').textContent=stations.length+' 个电台';if(!stations.length){const e=document.createElement('div');e.className='notice';e.textContent='暂无电台，请到管理页面添加';host.append(e);return}let group='';stations.forEach(station=>{if(station.group!==group){group=station.group;const heading=document.createElement('div');heading.className='station-group';heading.textContent=group;host.append(heading)}host.append(stationButton(station))});updateRows()}
+function stationButton(station,inFavorites=false){const row=document.createElement('button'),img=document.createElement('img'),fallback=document.createElement('span'),text=document.createElement('span'),name=document.createElement('b');row.className='station';row.dataset.stationId=station.id;row.addEventListener('click',()=>selectStation(station.id,inFavorites));img.loading='lazy';img.decoding='async';fallback.className='fallback';name.textContent=station.name;text.append(name);if(station.id===selected){const hint=document.createElement('small');hint.textContent='当前电台';text.append(hint)}setImage(img,fallback,station);row.append(img,fallback,text);return row}
+function renderStations(){const host=q('#stations');host.replaceChildren();q('#count').textContent=stations.length+' 个电台';if(!stations.length){const e=document.createElement('div');e.className='notice';e.textContent='暂无电台，请到管理页面添加';host.append(e);return}const favoriteHeading=document.createElement('div');favoriteHeading.className='station-group';favoriteHeading.textContent='收藏（'+favorites.length+'）';host.append(favoriteHeading);favorites.map(id=>stations.find(s=>s.id===id)).filter(Boolean).forEach(station=>host.append(stationButton(station,true)));let group='';stations.forEach(station=>{if(station.group!==group){group=station.group;const heading=document.createElement('div');heading.className='station-group';heading.textContent=group;host.append(heading)}host.append(stationButton(station))});updateRows()}
 function applyPlayer(data){playerState=data.state||playerState;if(Number.isInteger(data.selected_station))selected=data.selected_station;if(Number.isInteger(data.volume))q('#volume').value=data.volume;renderNow()}
-async function loadStations(){const data=await api('/api/user/stations');stations=Array.isArray(data.stations)?data.stations:[];selected=data.selected;playlistRevision=data.revision||0;renderStations();renderNow()}
+async function loadStations(){const data=await api('/api/user/stations');stations=Array.isArray(data.stations)?data.stations:[];favorites=Array.isArray(data.favorites)?data.favorites:[];selected=data.selected;playlistRevision=data.revision||0;renderStations();renderNow()}
 async function command(url){try{applyPlayer(await api(url,{method:'POST'}))}catch(e){alert(e.message)}}
-function selectStation(id){selected=id;playerState='buffering_or_reconnecting';renderNow();command('/api/user/stations/select?id='+encodeURIComponent(id))}
+function selectStation(id,inFavorites=false){selected=id;playerState='buffering_or_reconnecting';renderNow();command('/api/user/stations/select?id='+encodeURIComponent(id)+(inFavorites?'&context=favorites':''))}
 async function refresh(){if(refreshBusy)return;refreshBusy=true;try{const data=await api('/api/user/player/status');applyPlayer(data);if(data.playlist_revision!==playlistRevision)await loadStations()}catch(e){q('#state').textContent='设备连接失败'}finally{refreshBusy=false;setTimeout(refresh,document.hidden?30000:5000)}}
 q('#play').addEventListener('click',()=>command(playerState==='playing'?'/api/user/player/stop':'/api/user/player/play'));q('#previous').addEventListener('click',()=>command('/api/user/player/previous'));q('#next').addEventListener('click',()=>command('/api/user/player/next'));q('#volume').addEventListener('input',e=>{clearTimeout(volumeTimer);volumeTimer=setTimeout(()=>command('/api/user/player/volume?value='+encodeURIComponent(e.target.value)),180)});
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh()});refresh();api('/api/user/theme').then(theme=>{document.documentElement.style.setProperty('--bg',theme.background);document.documentElement.style.setProperty('--accent',theme.accent);document.body.style.backgroundColor=theme.background;q('meta[name="theme-color"]').content=theme.background;const t=textureStyles[theme.texture]||textureStyles.none;q('.app').style.backgroundImage=t[0];q('.app').style.backgroundSize=t[1]}).catch(()=>{});
@@ -4228,7 +4470,7 @@ document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh()}
 )HTML";
 
 constexpr char kAdminHtmlV302[] PROGMEM =
-R"HTML(<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>网络收音机 4.7.5 管理</title><style>
+R"HTML(<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>网络收音机 4.8.0 管理</title><style>
 :root{color-scheme:dark}body{max-width:880px;margin:24px auto;padding:0 16px;background:#101827;color:#e5e7eb;font:16px system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif}section,pre,.station,.wifi-network{background:#172234;padding:14px;border-radius:10px;margin:14px 0}button,input,select{box-sizing:border-box;padding:9px;margin:4px;border:0;border-radius:6px}input,select{width:100%}button{background:#38bdf8;color:#062032;font-weight:700;cursor:pointer}button:disabled{opacity:.38;cursor:not-allowed}.warn{background:#fbbf24}.danger{background:#fb7185}.playlist-head,.station-group{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}.playlist-head h2,.station-group strong{margin:0}.station-group{margin:24px 2px 8px;padding:10px 12px;border:1px solid #263b55;border-radius:9px;color:#67e8f9;font-size:18px;font-weight:800}.group-actions{display:flex;flex-wrap:wrap;gap:3px}.group-actions button{min-width:auto;margin:0;padding:7px 10px;font-size:13px}.station{content-visibility:auto;contain-intrinsic-size:170px}.station img,.station .fallback{display:inline-grid;width:48px;height:48px;object-fit:contain;object-position:center;background:#fff;border-radius:8px;vertical-align:middle;margin-right:10px}.station .fallback{place-items:center;background:#e89c27;color:#fff;font-weight:700}.station small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#b7c6da}.actions{display:block}.station button{min-width:82px;padding:11px 17px}.wifi-network{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px}.wifi-network b{overflow:hidden;text-overflow:ellipsis}.wifi-network button{width:auto;margin:0}.active{outline:2px solid #38bdf8}.state{font-size:1.1em;color:#67e8f9;margin-bottom:24px}.transport{display:flex;align-items:center;justify-content:center;gap:clamp(28px,8vw,72px);margin:18px 0 28px}.transport button{display:grid;place-items:center;margin:0}.skip{width:76px;height:64px;border-radius:18px;font-size:25px;background:#263449;color:#dce6f5}.play{width:92px;height:92px;border-radius:50%;font-size:36px;background:#f8fafc;color:#172234;box-shadow:0 10px 28px #0005}.volume-head{display:flex;justify-content:space-between;align-items:center;margin:0 6px 8px;color:#cbd5e1}.volume-head b{color:#fff;font-size:1.15em}.volume{width:calc(100% - 10px);accent-color:#38bdf8}.theme-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.theme-grid label{display:grid;gap:6px}.theme-grid input,.theme-grid select{margin:0}.theme-grid input[type=color]{height:54px;padding:4px;border:1px solid #ffffff26;border-radius:10px;background:#fff;color-scheme:light;cursor:pointer}.theme-grid input[type=color]::-webkit-color-swatch-wrapper{padding:0}.theme-grid input[type=color]::-webkit-color-swatch{border:0;border-radius:6px}.theme-grid input[type=color]::-moz-color-swatch{border:0;border-radius:6px}pre{overflow:auto;white-space:pre-wrap}a{color:#67e8f9}@media(max-width:560px){.theme-grid{grid-template-columns:1fr}.playlist-head{align-items:flex-start}.station{overflow-x:auto;white-space:nowrap;contain-intrinsic-size:190px}.station small{white-space:normal}.station button{min-width:auto;padding:9px 11px;margin:3px 2px}.group-actions{width:100%}.group-actions button{flex:1}}</style></head>
 <body><h1>ESP32-S3 网络收音机</h1><p>版本号：)HTML"
 NETWORK_RADIO_VERSION
@@ -4243,14 +4485,14 @@ R"HTML(　<a href="/">返回播放器</a></p>
 <section><h2>串口日志</h2><p>开关会立即生效并保存；关闭只停止串口输出，诊断日志仍会保留。</p><div id="serialLogs" style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px"><label style="display:flex;align-items:center;gap:8px"><input id="logSystem" type="checkbox" style="width:auto">系统 / 存储</label><label style="display:flex;align-items:center;gap:8px"><input id="logWifi" type="checkbox" style="width:auto">Wi-Fi</label><label style="display:flex;align-items:center;gap:8px"><input id="logAudio" type="checkbox" style="width:auto">音频 / 播放恢复</label><label style="display:flex;align-items:center;gap:8px"><input id="logTouch" type="checkbox" style="width:auto">触摸按键</label></div><small id="serialLogState">正在读取…</small></section>
 <section><h2>维护与安全</h2><button id="chooseFirmware">选择固件并升级</button><input id="firmware" type="file" accept=".bin" hidden><button id="chooseResources" class="warn">选择资源镜像并升级</button><input id="resources" type="file" accept=".bin" hidden><p><small>资源升级请选择构建目录中的 <code>littlefs.bin</code>。它会更新台标、开机提示音等 LittleFS 文件，不会清除 Wi-Fi、电台或管理密码。</small></p><button id="downloadLog">下载诊断日志</button><input id="adminPassword" type="password" placeholder="设置管理密码（8–63 位，用户名 admin）"><button id="savePassword">保存管理密码</button><button id="factoryReset" class="danger">恢复出厂设置</button><p>配网热点密码独立：<code>radio-setup</code></p></section><pre id="status">读取中…</pre>
 <script>
-const q=s=>document.querySelector(s),enc=o=>new URLSearchParams(o);let stations=[],groups=[],selected=-1,playerState='stopped',playlistRevision=0,pollBusy=false,volumeTimer,pollCount=0;
+const q=s=>document.querySelector(s),enc=o=>new URLSearchParams(o);let stations=[],groups=[],favorites=[],selected=-1,playerState='stopped',playlistRevision=0,pollBusy=false,volumeTimer,pollCount=0;
 async function api(url,options){const r=await fetch(url,options);const t=await r.text();let d={};try{d=t?JSON.parse(t):{}}catch(_){d={error:t||'请求失败'}}if(!r.ok)throw Error(d.error||'请求失败');return d}
 function safeLogo(name){return typeof name==='string'&&/^[A-Za-z0-9._-]+$/.test(name)?'/logos/'+encodeURIComponent(name):''}
 function button(label,handler,style,disabled=false){const b=document.createElement('button');b.textContent=label;if(style)b.className=style;b.disabled=disabled;b.addEventListener('click',handler);return b}
 function stationImage(station){const image=document.createElement('img'),fallback=document.createElement('span'),url=safeLogo(station.logo);image.loading='lazy';image.decoding='async';fallback.className='fallback';fallback.textContent=(station.name||'R').trim().slice(0,1).toUpperCase()||'R';if(!url){image.style.display='none'}else{fallback.style.display='none';image.onerror=()=>{image.style.display='none';fallback.style.display='grid'};image.src=url}return [image,fallback]}
-function stationRow(station){const row=document.createElement('article'),title=document.createElement('b'),url=document.createElement('small'),actions=document.createElement('div'),[image,fallback]=stationImage(station);row.className='station'+(station.id===selected?' active':'');row.dataset.stationId=String(station.id);title.textContent=station.name;url.textContent=station.url;actions.className='actions';actions.append(button('播放此台',()=>post('/api/stations/select?id='+station.id)),button('编辑',()=>editStation(station.id)),button('组内最前',()=>post('/api/stations/move?id='+station.id+'&direction=first')),button('↑',()=>post('/api/stations/move?id='+station.id+'&direction=up')),button('↓',()=>post('/api/stations/move?id='+station.id+'&direction=down')),button('组内最后',()=>post('/api/stations/move?id='+station.id+'&direction=last')),button('删除',()=>removeStation(station.id),'warn'));row.append(image,fallback,title,url,actions);return row}
-function renderStations(){const host=q('#stations');host.replaceChildren();const visible=groups.length?groups:Array.from(new Map(stations.map(s=>[s.group_id,{id:s.group_id,name:s.group,count:stations.filter(x=>x.group_id===s.group_id).length}])).values()),positions=new Map(visible.map((g,i)=>[g.id,i]));let groupId=null;stations.forEach(station=>{if(station.group_id!==groupId){groupId=station.group_id;const meta=visible.find(g=>g.id===groupId)||{id:groupId,name:station.group,count:0},position=positions.get(groupId)||0,heading=document.createElement('div'),label=document.createElement('strong'),controls=document.createElement('div');heading.className='station-group';label.textContent=meta.name+'（'+meta.count+'）';controls.className='group-actions';controls.append(button('最前',()=>postGroup('/api/station-groups/move?id='+meta.id+'&direction=first'),'',position===0),button('上移',()=>postGroup('/api/station-groups/move?id='+meta.id+'&direction=up'),'',position===0),button('下移',()=>postGroup('/api/station-groups/move?id='+meta.id+'&direction=down'),'',position===visible.length-1),button('最后',()=>postGroup('/api/station-groups/move?id='+meta.id+'&direction=last'),'',position===visible.length-1));heading.append(label,controls);host.append(heading)}host.append(stationRow(station))});if(!stations.length){const p=document.createElement('p');p.textContent='暂无电台';host.append(p)}}
-function applyPlaylist(data){if(!Array.isArray(data.stations))return;stations=data.stations;groups=Array.isArray(data.groups)?data.groups:[];selected=data.selected;playlistRevision=data.revision||playlistRevision;renderStations()}
+function stationRow(station,inFavorites=false,favoritePosition=-1){const row=document.createElement('article'),title=document.createElement('b'),url=document.createElement('small'),actions=document.createElement('div'),[image,fallback]=stationImage(station),isFavorite=favorites.includes(station.id);row.className='station'+(station.id===selected?' active':'');row.dataset.stationId=String(station.id);title.textContent=station.name;url.textContent=station.url;actions.className='actions';if(inFavorites){actions.append(button('播放此台',()=>post('/api/stations/select?id='+station.id+'&context=favorites')),button('最前',()=>postFavorite('/api/favorites/move?id='+station.id+'&direction=first'),'',favoritePosition===0),button('↑',()=>postFavorite('/api/favorites/move?id='+station.id+'&direction=up'),'',favoritePosition===0),button('↓',()=>postFavorite('/api/favorites/move?id='+station.id+'&direction=down'),'',favoritePosition===favorites.length-1),button('最后',()=>postFavorite('/api/favorites/move?id='+station.id+'&direction=last'),'',favoritePosition===favorites.length-1),button('取消收藏',()=>postFavorite('/api/favorites?id='+station.id+'&action=remove'),'warn'))}else{actions.append(button('播放此台',()=>post('/api/stations/select?id='+station.id)),button(isFavorite?'取消收藏':'加入收藏',()=>postFavorite('/api/favorites?id='+station.id+'&action='+(isFavorite?'remove':'add')),isFavorite?'warn':''),button('编辑',()=>editStation(station.id)),button('组内最前',()=>post('/api/stations/move?id='+station.id+'&direction=first')),button('↑',()=>post('/api/stations/move?id='+station.id+'&direction=up')),button('↓',()=>post('/api/stations/move?id='+station.id+'&direction=down')),button('组内最后',()=>post('/api/stations/move?id='+station.id+'&direction=last')),button('删除',()=>removeStation(station.id),'warn'))}row.append(image,fallback,title,url,actions);return row}
+function renderStations(){const host=q('#stations');host.replaceChildren(),favoriteMeta=groups.find(g=>g.id===255)||{id:255,name:'收藏',count:favorites.length},favoriteHeading=document.createElement('div'),favoriteLabel=document.createElement('strong');favoriteHeading.className='station-group';favoriteLabel.textContent=favoriteMeta.name+'（'+favorites.length+'）';favoriteHeading.append(favoriteLabel);host.append(favoriteHeading);favorites.map(id=>stations.find(s=>s.id===id)).filter(Boolean).forEach((station,index)=>host.append(stationRow(station,true,index)));const visible=(groups.length?groups:Array.from(new Map(stations.map(s=>[s.group_id,{id:s.group_id,name:s.group,count:stations.filter(x=>x.group_id===s.group_id).length}])).values())).filter(g=>g.id!==255),positions=new Map(visible.map((g,i)=>[g.id,i]));let groupId=null;stations.forEach(station=>{if(station.group_id!==groupId){groupId=station.group_id;const meta=visible.find(g=>g.id===groupId)||{id:groupId,name:station.group,count:0},position=positions.get(groupId)||0,heading=document.createElement('div'),label=document.createElement('strong'),controls=document.createElement('div');heading.className='station-group';label.textContent=meta.name+'（'+meta.count+'）';controls.className='group-actions';controls.append(button('最前',()=>postGroup('/api/station-groups/move?id='+meta.id+'&direction=first'),'',position===0),button('上移',()=>postGroup('/api/station-groups/move?id='+meta.id+'&direction=up'),'',position===0),button('下移',()=>postGroup('/api/station-groups/move?id='+meta.id+'&direction=down'),'',position===visible.length-1),button('最后',()=>postGroup('/api/station-groups/move?id='+meta.id+'&direction=last'),'',position===visible.length-1));heading.append(label,controls);host.append(heading)}host.append(stationRow(station))});if(!stations.length){const p=document.createElement('p');p.textContent='暂无电台';host.append(p)}}
+function applyPlaylist(data){if(!Array.isArray(data.stations))return;stations=data.stations;groups=Array.isArray(data.groups)?data.groups:[];favorites=Array.isArray(data.favorites)?data.favorites:[];selected=data.selected;playlistRevision=data.revision||playlistRevision;renderStations()}
 function applyPlayer(data){playerState=data.state||playerState;if(Number.isInteger(data.selected_station))selected=data.selected_station;if(Number.isInteger(data.volume)){q('#volume').value=data.volume;q('#volumeText').textContent=data.volume}const current=stations.find(s=>s.id===selected);q('#now').textContent=(data.state||'stopped')+' · '+(current?current.name:'网络收音机')+(data.message?' · '+data.message:'');q('#play').textContent=playerState==='playing'?'Ⅱ':'▶';document.querySelectorAll('.station').forEach(row=>row.classList.toggle('active',Number(row.dataset.stationId)===selected))}
 async function loadPlaylist(){applyPlaylist(await api('/api/stations'))}
 async function refreshPlayer(reloadPlaylist=true){const data=await api('/api/player/status');applyPlayer(data);if(reloadPlaylist&&data.playlist_revision!==playlistRevision)await loadPlaylist()}
@@ -4258,6 +4500,7 @@ async function refreshStatus(){const data=await api('/api/status');q('#status').
 async function poll(){if(pollBusy)return;pollBusy=true;try{await refreshPlayer();if(++pollCount%6===0)await refreshStatus()}catch(e){q('#status').textContent='错误：'+e.message}finally{pollBusy=false;setTimeout(poll,document.hidden?30000:5000)}}
 async function post(url){try{const data=await api(url,{method:'POST'});applyPlaylist(data);applyPlayer(data)}catch(e){alert(e.message)}}
 async function postGroup(url){try{await api(url,{method:'POST'});await loadPlaylist()}catch(e){try{await loadPlaylist()}catch(_){}alert(e.message)}}
+async function postFavorite(url){try{applyPlaylist(await api(url,{method:'POST'}))}catch(e){alert(e.message)}}
 function editStation(id){const s=stations.find(x=>x.id===id);if(!s)return;q('#editId').value=id;q('#stationName').value=s.name;q('#stationUrl').value=s.url;q('#formTitle').textContent='编辑电台'}
 function clearForm(){q('#editId').value='';q('#stationName').value='';q('#stationUrl').value='';q('#formTitle').textContent='新增电台'}
 async function saveStation(){const id=q('#editId').value,body=enc({name:q('#stationName').value,url:q('#stationUrl').value});try{const data=await api(id===''?'/api/stations':'/api/stations/update?id='+encodeURIComponent(id),{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body});applyPlaylist(data);clearForm()}catch(e){alert(e.message)}}
@@ -4302,6 +4545,12 @@ void configureWebServerV8() {
   server.on("/api/stations/delete", HTTP_POST, [] { if (requireAdmin()) handleDeleteStation(); });
   server.on("/api/stations/select", HTTP_POST, [] { if (requireAdmin()) handleSelectStation(); });
   server.on("/api/stations/move", HTTP_POST, [] { if (requireAdmin()) handleMoveStationV11(); });
+  server.on("/api/favorites", HTTP_POST, [] {
+    if (requireAdmin()) handleSetFavoriteStation();
+  });
+  server.on("/api/favorites/move", HTTP_POST, [] {
+    if (requireAdmin()) handleMoveFavoriteStation();
+  });
   server.on("/api/station-groups/move", HTTP_POST, [] {
     if (requireAdmin()) handleMoveStationGroup();
   });
@@ -4369,6 +4618,7 @@ void setup() {
   const bool expandedStationsAdded = importExpandedStationPack();
   enrichStationIcons();
   initialiseStationGroups(expandedStationsAdded);
+  loadFavoriteStations();
   loadUiTheme();
   loadLedSettings();
   playerPreferences.begin("player", true); playerVolume = playerPreferences.getUChar("volume", playerVolume); playerPreferences.end();
