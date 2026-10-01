@@ -9,6 +9,9 @@ arduino_cli=${ARDUINO_CLI:-arduino-cli}
 fqbn=${ESP32_FQBN:-"esp32:esp32:esp32s3:UploadSpeed=460800,USBMode=hwcdc,CDCOnBoot=default,MSCOnBoot=default,DFUOnBoot=default,UploadMode=default,CPUFreq=240,FlashMode=qio,FlashSize=16M,PartitionScheme=app3M_fat9M_16MB,DebugLevel=none,PSRAM=opi,LoopCore=1,EventsCore=1,EraseFlash=none,JTAGAdapter=default,ZigbeeMode=default"}
 project_name="$(basename "$sketch_dir").ino"
 build_path=${ESP32_BUILD_PATH:-"${project_root}/build/${project_name%.ino}"}
+audio_library_source=${ESP32_AUDIO_I2S_DIR:-"${HOME}/Documents/Arduino/libraries/ESP32-audioI2S-master"}
+audio_library_build="${project_root}/build/patched-libraries/ESP32-audioI2S"
+audio_library_patch="${project_root}/tools/patches/esp32-audioi2s-hls-refresh.patch"
 upload_requested=false
 upload_port=
 compile_args=()
@@ -49,6 +52,14 @@ done
   echo "Custom partition table not found: ${sketch_dir}/partitions.csv" >&2
   exit 66
 }
+[[ -f "${audio_library_source}/src/Audio.cpp" ]] || {
+  echo "ESP32-audioI2S was not found; set ESP32_AUDIO_I2S_DIR to its library directory." >&2
+  exit 66
+}
+[[ -f "$audio_library_patch" ]] || {
+  echo "Audio-library patch not found: ${audio_library_patch}" >&2
+  exit 66
+}
 
 # Arduino's bundled ctags for this core can be x86-only on Apple Silicon.
 # Prefer an installed Universal Ctags when it is available, while leaving
@@ -58,6 +69,12 @@ if command -v ctags >/dev/null 2>&1 && ctags --version 2>/dev/null | grep -qi 'u
 fi
 
 mkdir -p "$build_path"
+rm -rf -- "$audio_library_build"
+mkdir -p "$(dirname "$audio_library_build")"
+cp -R "$audio_library_source" "$audio_library_build"
+patch --batch --forward --silent -d "$audio_library_build" -p1 < "$audio_library_patch"
+
+library_args=(--library "$audio_library_build")
 
 merge_recipe='recipe.hooks.objcopy.postobjcopy.3.pattern_args=--chip {build.mcu} merge-bin -o "{build.path}/{build.project_name}.merged.bin" --pad-to-size {build.flash_size} --flash-mode keep --flash-freq keep --flash-size keep {build.bootloader_addr} "{build.path}/{build.project_name}.bootloader.bin" 0x8000 "{build.path}/{build.project_name}.partitions.bin" 0x19000 "{runtime.platform.path}/tools/partitions/boot_app0.bin" 0x20000 "{build.path}/{build.project_name}.bin"'
 flash_args_recipe="recipe.hooks.objcopy.postobjcopy.4.pattern=\"${project_root}/tools/write-flash-args.sh\" \"{build.path}\" \"{build.project_name}\" \"{build.bootloader_addr}\" \"{build.flash_mode}\" \"{build.img_freq}\" \"{build.flash_size}\""
@@ -68,6 +85,7 @@ if (( ${#compile_args[@]} > 0 )); then
     --build-path "$build_path" \
     --build-property "$merge_recipe" \
     --build-property "$flash_args_recipe" \
+    "${library_args[@]}" \
     ${ctags_args[@]+"${ctags_args[@]}"} \
     "${compile_args[@]}" \
     "$sketch_dir"
@@ -77,6 +95,7 @@ else
     --build-path "$build_path" \
     --build-property "$merge_recipe" \
     --build-property "$flash_args_recipe" \
+    "${library_args[@]}" \
     ${ctags_args[@]+"${ctags_args[@]}"} \
     "$sketch_dir"
 fi

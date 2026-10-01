@@ -1,0 +1,32 @@
+--- a/src/Audio.cpp
++++ b/src/Audio.cpp
+@@ -3922,7 +3922,13 @@ void Audio::processAudioData() {
+                         // AUDIO_LOG_DEBUG("wait");
+                         break;
+                     }
+-                    if (m_f_stream) m_lVar.no_host_timer = millis() + 10000;
++                    if (m_f_stream) {
++                        uint32_t reloadDelay =
++                            static_cast<uint32_t>(m_m3u8_targetDuration) * 500U;
++                        if (reloadDelay < 1000U) reloadDelay = 1000U;
++                        if (reloadDelay > 10000U) reloadDelay = 10000U;
++                        m_lVar.no_host_timer = millis() + reloadDelay;
++                    }
+                     httpPrint(m_m3u8_host.get());
+                     m_dataMode = HTTP_RESPONSE_HEADER; // we have a new playlist now
+                 }
+@@ -4422,6 +4428,14 @@ ps_ptr<char> Audio::parsePlaylist_M3U8() {
+                 m_linesWithEXTINF.emplace_back(m_playlistContent[i]);
+                 addNextLine = true;
+             }
++            if (m_playlistContent[i].starts_with("#EXT-X-TARGETDURATION:")) {
++                const long targetDuration =
++                    strtol(m_playlistContent[i].get() + 22, nullptr, 10);
++                if (targetDuration > 0 && targetDuration <= UINT16_MAX) {
++                    m_m3u8_targetDuration =
++                        static_cast<uint16_t>(targetDuration);
++                }
++            }
+         }
+         if (!f_haveRedirection) {
+             accomplish_m3u8_url();

@@ -1,5 +1,5 @@
 /*
- * Network Radio 4.8.0 standalone Arduino sketch.
+ * Network Radio 4.8.1 standalone Arduino sketch.
  * Project-local source dependencies are inlined in this file.
  *
  * The superseded V4 test-tone/I2S path and unused legacy web pages have
@@ -9,7 +9,7 @@
 
 /* Network Radio 3.0: player UI, administration UI, and WS2812B status LED. */
 
-#define NETWORK_RADIO_VERSION "4.8.0"
+#define NETWORK_RADIO_VERSION "4.8.1"
 #define NETWORK_RADIO_MAX_STATIONS 512
 #ifdef NETWORK_RADIO_NO_ENTRYPOINT
 #define NETWORK_RADIO_V8_NO_ENTRYPOINT
@@ -82,7 +82,7 @@ void audio_process_i2s(int32_t *outBuff, int16_t validSamples,
 
 namespace config {
 #ifndef NETWORK_RADIO_VERSION
-#define NETWORK_RADIO_VERSION "4.8.0"
+#define NETWORK_RADIO_VERSION "4.8.1"
 #endif
 constexpr char kFirmwareVersion[] = NETWORK_RADIO_VERSION;
 constexpr uint32_t kSerialBaud = 115200;
@@ -2166,6 +2166,7 @@ String otaError;
 
 enum class StatusLedMode : uint8_t { Off, Buffering, Playing, Error, Ota };
 enum class PlayingLedEffect : uint8_t {
+  Off,
   Rainbow,
   ColorBreathe,
   Aurora,
@@ -2193,6 +2194,7 @@ struct PlayingLedEffectOption {
 };
 
 constexpr PlayingLedEffectOption kPlayingLedEffectOptions[] = {
+    {"off", PlayingLedEffect::Off},
     {"rainbow", PlayingLedEffect::Rainbow},
     {"color_breathe", PlayingLedEffect::ColorBreathe},
     {"aurora", PlayingLedEffect::Aurora},
@@ -2287,6 +2289,8 @@ uint32_t ledHash(uint32_t value) {
 
 RgbColor renderPlayingLedEffect(uint32_t now) {
   switch (playingLedEffect) {
+    case PlayingLedEffect::Off:
+      return {0, 0, 0};
     case PlayingLedEffect::ColorBreathe: {
       const RgbColor color = rainbowRgb((now % 12000U) * 768U / 12000U);
       return scaleRgb(color, breathingLevel(now, 4000U));
@@ -4470,7 +4474,7 @@ document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh()}
 )HTML";
 
 constexpr char kAdminHtmlV302[] PROGMEM =
-R"HTML(<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>网络收音机 4.8.0 管理</title><style>
+R"HTML(<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>网络收音机 4.8.1 管理</title><style>
 :root{color-scheme:dark}body{max-width:880px;margin:24px auto;padding:0 16px;background:#101827;color:#e5e7eb;font:16px system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif}section,pre,.station,.wifi-network{background:#172234;padding:14px;border-radius:10px;margin:14px 0}button,input,select{box-sizing:border-box;padding:9px;margin:4px;border:0;border-radius:6px}input,select{width:100%}button{background:#38bdf8;color:#062032;font-weight:700;cursor:pointer}button:disabled{opacity:.38;cursor:not-allowed}.warn{background:#fbbf24}.danger{background:#fb7185}.playlist-head,.station-group{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}.playlist-head h2,.station-group strong{margin:0}.station-group{margin:24px 2px 8px;padding:10px 12px;border:1px solid #263b55;border-radius:9px;color:#67e8f9;font-size:18px;font-weight:800}.group-actions{display:flex;flex-wrap:wrap;gap:3px}.group-actions button{min-width:auto;margin:0;padding:7px 10px;font-size:13px}.station{content-visibility:auto;contain-intrinsic-size:170px}.station img,.station .fallback{display:inline-grid;width:48px;height:48px;object-fit:contain;object-position:center;background:#fff;border-radius:8px;vertical-align:middle;margin-right:10px}.station .fallback{place-items:center;background:#e89c27;color:#fff;font-weight:700}.station small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#b7c6da}.actions{display:block}.station button{min-width:82px;padding:11px 17px}.wifi-network{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px}.wifi-network b{overflow:hidden;text-overflow:ellipsis}.wifi-network button{width:auto;margin:0}.active{outline:2px solid #38bdf8}.state{font-size:1.1em;color:#67e8f9;margin-bottom:24px}.transport{display:flex;align-items:center;justify-content:center;gap:clamp(28px,8vw,72px);margin:18px 0 28px}.transport button{display:grid;place-items:center;margin:0}.skip{width:76px;height:64px;border-radius:18px;font-size:25px;background:#263449;color:#dce6f5}.play{width:92px;height:92px;border-radius:50%;font-size:36px;background:#f8fafc;color:#172234;box-shadow:0 10px 28px #0005}.volume-head{display:flex;justify-content:space-between;align-items:center;margin:0 6px 8px;color:#cbd5e1}.volume-head b{color:#fff;font-size:1.15em}.volume{width:calc(100% - 10px);accent-color:#38bdf8}.theme-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.theme-grid label{display:grid;gap:6px}.theme-grid input,.theme-grid select{margin:0}.theme-grid input[type=color]{height:54px;padding:4px;border:1px solid #ffffff26;border-radius:10px;background:#fff;color-scheme:light;cursor:pointer}.theme-grid input[type=color]::-webkit-color-swatch-wrapper{padding:0}.theme-grid input[type=color]::-webkit-color-swatch{border:0;border-radius:6px}.theme-grid input[type=color]::-moz-color-swatch{border:0;border-radius:6px}pre{overflow:auto;white-space:pre-wrap}a{color:#67e8f9}@media(max-width:560px){.theme-grid{grid-template-columns:1fr}.playlist-head{align-items:flex-start}.station{overflow-x:auto;white-space:nowrap;contain-intrinsic-size:190px}.station small{white-space:normal}.station button{min-width:auto;padding:9px 11px;margin:3px 2px}.group-actions{width:100%}.group-actions button{flex:1}}</style></head>
 <body><h1>ESP32-S3 网络收音机</h1><p>版本号：)HTML"
 NETWORK_RADIO_VERSION
@@ -4479,7 +4483,7 @@ __DATE__ " " __TIME__
 R"HTML(　<a href="/">返回播放器</a></p>
 <section class="player"><h2>正在播放</h2><div id="now" class="state">读取中…</div><div class="transport"><button id="previous" class="skip" aria-label="上一台">◀◀</button><button id="play" class="play" aria-label="播放或暂停">▶</button><button id="next" class="skip" aria-label="下一台">▶▶</button></div><div class="volume-head"><span>音量</span><b><span id="volumeText">--</span>/21</b></div><input id="volume" class="volume" type="range" min="0" max="21"></section>
 <section><h2>用户页面外观</h2><div class="theme-grid"><label>页面颜色<input id="background" type="color" value="#656b6a"></label><label>强调颜色<input id="accent" type="color" value="#f2a51a"></label><label>纹理效果<select id="texture"><option value="none">无纹理</option><option value="dots">圆点</option><option value="grid">网格</option><option value="diagonal">斜纹</option><option value="cloud">祥云</option><option value="lattice">回纹窗格</option><option value="waves">水波</option><option value="bamboo">竹影</option><option value="ricepaper">宣纸</option><option value="porcelain">青花</option></select></label></div><button id="saveTheme">保存页面外观</button></section>
-<section><h2>RGB 播放灯效</h2><p>仅在正常播放时生效；缓冲、错误和 OTA 状态灯优先显示。</p><div class="theme-grid"><label>灯效<select id="ledEffect"><option value="rainbow">彩虹循环</option><option value="color_breathe">呼吸变色</option><option value="aurora">极光</option><option value="flame">火焰</option><option value="heartbeat">心跳</option><option value="meteor">流星</option><option value="pulse">脉冲</option><option value="random_fade">随机柔变</option><option value="music">音乐律动</option><option value="signal">状态渐变（Wi-Fi 信号）</option><option value="fixed_breathe">固定色呼吸</option><option value="temperature">色温变化</option><option value="starlight">闪烁星光</option></select></label><label>固定呼吸颜色<input id="ledFixedColor" type="color" value="#0080ff"></label></div><button id="saveLedEffect">保存 RGB 灯效</button></section>
+<section><h2>RGB 播放灯效</h2><p>仅在正常播放时生效；缓冲、错误和 OTA 状态灯优先显示。</p><div class="theme-grid"><label>灯效<select id="ledEffect"><option value="off">关闭</option><option value="rainbow">彩虹循环</option><option value="color_breathe">呼吸变色</option><option value="aurora">极光</option><option value="flame">火焰</option><option value="heartbeat">心跳</option><option value="meteor">流星</option><option value="pulse">脉冲</option><option value="random_fade">随机柔变</option><option value="music">音乐律动</option><option value="signal">状态渐变（Wi-Fi 信号）</option><option value="fixed_breathe">固定色呼吸</option><option value="temperature">色温变化</option><option value="starlight">闪烁星光</option></select></label><label>固定呼吸颜色<input id="ledFixedColor" type="color" value="#0080ff"></label></div><button id="saveLedEffect">保存 RGB 灯效</button></section>
 <section><div class="playlist-head"><h2>播放列表</h2><button id="resetGroups" class="warn">恢复默认分组顺序</button></div><div id="stations">加载中…</div><h3 id="formTitle">新增电台</h3><input id="editId" type="hidden"><input id="stationName" placeholder="电台名称"><input id="stationUrl" placeholder="http(s):// 音频流地址"><button id="saveStation">保存</button><button id="cancelEdit" class="warn">取消编辑</button></section>
 <section><h2>Wi-Fi</h2><p>最多保存 5 个网络；启动时会选择信号最强且可连接的已保存网络。</p><div id="savedWifi">读取已保存网络…</div><button id="scanWifi">扫描网络</button><select id="ssid"><option value="">选择 Wi-Fi</option></select><input id="wifiPassword" type="password" placeholder="Wi-Fi 密码（更新同名网络时请重新填写）"><button id="saveWifi">保存网络并重启连接</button><button id="forgetWifi" class="warn">清除全部 Wi-Fi 设置</button></section>
 <section><h2>串口日志</h2><p>开关会立即生效并保存；关闭只停止串口输出，诊断日志仍会保留。</p><div id="serialLogs" style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px"><label style="display:flex;align-items:center;gap:8px"><input id="logSystem" type="checkbox" style="width:auto">系统 / 存储</label><label style="display:flex;align-items:center;gap:8px"><input id="logWifi" type="checkbox" style="width:auto">Wi-Fi</label><label style="display:flex;align-items:center;gap:8px"><input id="logAudio" type="checkbox" style="width:auto">音频 / 播放恢复</label><label style="display:flex;align-items:center;gap:8px"><input id="logTouch" type="checkbox" style="width:auto">触摸按键</label></div><small id="serialLogState">正在读取…</small></section>
