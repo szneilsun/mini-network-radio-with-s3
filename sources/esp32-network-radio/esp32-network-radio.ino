@@ -843,6 +843,20 @@ void loadPlaylist() {
   }
 }
 
+String favoriteStationIdsJson() {
+  String json = "[";
+  bool first = true;
+  for (uint16_t position = 0; position < favoriteStationCount; ++position) {
+    const int stationIndex =
+        favoriteStationIndexForKey(favoriteStationKeys[position]);
+    if (stationIndex < 0) continue;
+    if (!first) json += ',';
+    first = false;
+    json += String(stationIndex);
+  }
+  return json + "]";
+}
+
 void sendPlaylistJson(bool includeUrls, int statusCode = 200) {
   server.setContentLength(CONTENT_LENGTH_UNKNOWN);
   server.sendHeader("Cache-Control", "no-store, no-cache, must-revalidate");
@@ -891,17 +905,7 @@ void sendPlaylistJson(bool includeUrls, int statusCode = 200) {
       chunk = "";
     }
   }
-  chunk += "],\"favorites\":[";
-  bool firstFavorite = true;
-  for (uint16_t position = 0; position < favoriteStationCount; ++position) {
-    const int stationIndex =
-        favoriteStationIndexForKey(favoriteStationKeys[position]);
-    if (stationIndex < 0) continue;
-    if (!firstFavorite) chunk += ',';
-    firstFavorite = false;
-    chunk += String(stationIndex);
-  }
-  chunk += "]}";
+  chunk += "],\"favorites\":" + favoriteStationIdsJson() + "}";
   server.sendContent(chunk);
   server.sendContent("");
 }
@@ -4183,7 +4187,16 @@ void handleMoveStationV11() {
   else sendJson("{\"error\":\"could not save playlist\"}", 500);
 }
 
-void handleSetFavoriteStation() {
+void sendFavoriteStationResult(bool publicResponse) {
+  if (publicResponse) {
+    sendJson("{\"revision\":" + String(playlistRevision) +
+             ",\"favorites\":" + favoriteStationIdsJson() + "}");
+  } else {
+    sendPlaylistJson(true);
+  }
+}
+
+void handleSetFavoriteStation(bool publicResponse = false) {
   uint16_t id;
   if (!parseStationId(id)) {
     sendJson("{\"error\":\"invalid station id\"}", 400);
@@ -4198,7 +4211,7 @@ void handleSetFavoriteStation() {
   const int current = favoriteStationPosition(id);
   if ((action == "add" && current >= 0) ||
       (action == "remove" && current < 0)) {
-    sendPlaylistJson(true);
+    sendFavoriteStationResult(publicResponse);
     return;
   }
   uint32_t previous[config::kMaxStations] = {};
@@ -4230,7 +4243,7 @@ void handleSetFavoriteStation() {
     }
   }
   markPlaylistChanged();
-  sendPlaylistJson(true);
+  sendFavoriteStationResult(publicResponse);
 }
 
 void handleMoveFavoriteStation() {
@@ -4636,9 +4649,22 @@ constexpr char kUserHtmlV301[] PROGMEM = R"HTML(
 <!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#656b6a"><title>网络收音机</title><style>
 :root{color-scheme:dark;--bg:#656b6a;--panel:#707675;--text:#fff;--muted:#d7dcda;--line:#858b89;--accent:#f2a51a}*{box-sizing:border-box}body{margin:0;background:#4e5453;color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}.app{position:relative;width:100%;max-width:720px;min-height:100vh;margin:auto;padding:20px clamp(18px,5vw,42px) 50px;background:var(--bg);box-shadow:0 0 32px #0004}.settings{position:absolute;right:18px;top:16px;display:grid;place-items:center;width:48px;height:48px;border:0;border-radius:50%;background:#ffffff1c;color:#fff;text-decoration:none;font-size:27px}.settings:active{transform:scale(.96)}.clock{position:absolute;top:25px;left:50%;transform:translateX(-50%);width:220px;color:var(--accent);font-size:15px;font-weight:700;font-variant-numeric:tabular-nums;text-align:center}.hero{text-align:center;padding-top:58px}.cover-wrap{position:relative;width:min(48vw,250px);aspect-ratio:1;margin:auto;border-radius:22px;background:#f5f5f5;overflow:hidden;box-shadow:0 8px 25px #0003}.cover{display:block;width:100%;height:100%;object-fit:contain;object-position:center}.cover-fallback{position:absolute;inset:0;display:none;place-items:center;background:linear-gradient(145deg,#f5a623,#d47b13);font-size:clamp(46px,12vw,78px);font-weight:800}.station-name{min-height:1.5em;margin:25px 0 5px;font-size:clamp(25px,5vw,34px);font-weight:700}.state{color:var(--accent);font-size:18px}.progress{height:7px;margin:34px 0 28px;background:#a7adaa;border-radius:10px;overflow:hidden}.progress i{display:block;width:0;height:100%;background:var(--accent);transition:width .4s}.progress.busy i{width:58%;animation:load 1.5s ease-in-out infinite}@keyframes load{0%{transform:translateX(-110%)}100%{transform:translateX(180%)}}.controls{display:flex;align-items:center;justify-content:space-around;max-width:530px;margin:auto}.controls button{display:grid;place-items:center;border:0;color:#fff;background:transparent;cursor:pointer}.controls button:not(.play){width:80px;height:70px;font-size:42px}.controls .play{width:108px;height:108px;border-radius:50%;background:#fff;color:#5e6463;font-size:48px;box-shadow:0 7px 22px #0003}.volume{display:flex;align-items:center;gap:11px;margin:30px 4px 24px;color:var(--muted)}.volume input{min-width:0;flex:1}.sleep-timer{flex:0 0 auto;width:108px;padding:8px 6px;border:1px solid #ffffff2b;border-radius:6px;background:#ffffff17;color:#fff;font:inherit}input[type=range]{width:100%;accent-color:var(--accent)}.list-title{display:flex;align-items:center;justify-content:space-between;margin:15px 0 5px}.list-title h2{font-size:18px;margin:0}.count{color:var(--muted);font-size:14px}.station-list{border-top:1px solid var(--line)}.station-group{padding:20px 10px 7px;color:var(--accent);font-size:15px;font-weight:800;border-bottom:1px solid var(--line)}.station{display:flex;align-items:center;gap:17px;width:100%;min-height:88px;padding:12px 10px;border:0;border-bottom:1px solid var(--line);background:transparent;color:#fff;text-align:left;cursor:pointer;content-visibility:auto;contain-intrinsic-size:88px}.station.active{background:#ffffff12;border-left:4px solid var(--accent);padding-left:6px}.station img,.station .fallback{display:block;flex:0 0 62px;width:62px;height:62px;border-radius:13px;background:#f7f7f7;object-fit:contain;object-position:center}.station .fallback{display:grid;place-items:center;background:linear-gradient(145deg,#f5a623,#d47b13);color:#fff;font-size:25px;font-weight:800}.station b{font-size:19px;font-weight:600}.station small{display:block;margin-top:4px;color:var(--muted)}.notice{padding:30px 8px;text-align:center;color:var(--muted)}@media(max-width:480px){.app{padding-left:16px;padding-right:16px}.hero{padding-top:50px}.cover-wrap{width:56vw}.station-name{font-size:25px}.controls .play{width:94px;height:94px}.controls button:not(.play){font-size:34px}.volume{gap:7px}.sleep-timer{width:104px;font-size:14px}.station{min-height:78px;contain-intrinsic-size:78px}.station img,.station .fallback{flex-basis:54px;width:54px;height:54px}}</style></head>
 <body><main class="app"><time id="deviceTime" class="clock">正在校时</time><a class="settings" href="/admin" aria-label="进入管理页面" title="设置">⚙</a><section class="hero"><div class="cover-wrap"><img id="cover" class="cover" alt="当前电台台标"><div id="coverFallback" class="cover-fallback">R</div></div><div id="stationName" class="station-name">加载中…</div><div id="state" class="state">正在连接设备</div></section><div id="progress" class="progress"><i></i></div><nav class="controls" aria-label="播放控制"><button id="previous" aria-label="上一台">◀</button><button id="play" class="play" aria-label="播放或暂停">▶</button><button id="next" aria-label="下一台">▶</button></nav><div class="volume"><span>🔉</span><input id="volume" type="range" min="0" max="21" aria-label="音量"><span>🔊</span><select id="sleepTimer" class="sleep-timer" aria-label="播放定时"><option value="0">定时关闭</option><option value="15">15 分钟</option><option value="30">30 分钟</option><option value="45">45 分钟</option><option value="60">60 分钟</option><option value="90">90 分钟</option><option value="120">120 分钟</option></select></div><div class="list-title"><h2>电台列表</h2><span id="count" class="count"></span></div><section id="stations" class="station-list"></section></main>
+<style>
+/* Keep nested buttons hit-testable after fast scrolling in WebKit. */
+.station{content-visibility:visible;contain-intrinsic-size:none}
+.station-select{display:flex;align-items:center;gap:17px;flex:1;min-width:0;padding:0;border:0;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer}
+.station-select>span:last-child{min-width:0;overflow-wrap:anywhere}
+.station-current[hidden]{display:none}
+.favorite-toggle{display:grid;place-items:center;flex:0 0 44px;width:44px;height:44px;padding:9px;border:0;border-radius:50%;background:transparent;color:var(--muted);cursor:pointer}
+.favorite-toggle svg{width:26px;height:26px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linejoin:round}
+.favorite-toggle[aria-pressed=true]{color:#ff6b81}
+.favorite-toggle[aria-pressed=true] svg{fill:currentColor}
+.favorite-toggle:disabled{opacity:.55;cursor:wait}
+.station-select:focus-visible,.favorite-toggle:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+</style>
 <script>
 const q=s=>document.querySelector(s),textureStyles={none:['none','auto'],dots:['radial-gradient(#ffffff24 1px,transparent 1px)','18px 18px'],grid:['linear-gradient(#ffffff16 1px,transparent 1px),linear-gradient(90deg,#ffffff16 1px,transparent 1px)','24px 24px'],diagonal:['repeating-linear-gradient(135deg,#ffffff0d 0 2px,transparent 2px 12px)','auto'],cloud:['radial-gradient(circle at 12px 14px,transparent 9px,#ffffff1f 10px 11px,transparent 12px),radial-gradient(circle at 28px 14px,transparent 9px,#ffffff1f 10px 11px,transparent 12px)','40px 28px'],lattice:['linear-gradient(45deg,#ffffff14 12.5%,transparent 12.5% 37.5%,#ffffff14 37.5% 62.5%,transparent 62.5% 87.5%,#ffffff14 87.5%)','32px 32px'],waves:['radial-gradient(ellipse at 50% 100%,transparent 11px,#ffffff1c 12px 13px,transparent 14px)','34px 18px'],bamboo:['repeating-linear-gradient(90deg,transparent 0 30px,#ffffff16 31px 33px,transparent 34px 62px),repeating-linear-gradient(0deg,transparent 0 54px,#ffffff0d 55px 57px,transparent 58px 86px)','64px 88px'],ricepaper:['linear-gradient(25deg,#ffffff0a 1px,transparent 1px),linear-gradient(115deg,#ffffff08 1px,transparent 1px)','37px 53px,41px 47px'],porcelain:['radial-gradient(circle at 0 0,transparent 15px,#ffffff20 16px 17px,transparent 18px),radial-gradient(circle at 100% 100%,transparent 15px,#ffffff20 16px 17px,transparent 18px)','40px 40px']};
-let stations=[],favorites=[],selected=-1,playerState='stopped',playlistRevision=0,refreshBusy=false,refreshTimer,volumeTimer,deviceEpoch=0,deviceEpochSetAt=0,apiRequests=0;
+let stations=[],favorites=[],selected=-1,playerState='stopped',playlistRevision=0,refreshBusy=false,refreshTimer,volumeTimer,deviceEpoch=0,deviceEpochSetAt=0,apiRequests=0,favoriteBusy=false,favoriteRevision=0,playerPageActive=true;
 async function api(url,options={},timeoutMs=10000){
   const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),timeoutMs);
   ++apiRequests;
@@ -4683,7 +4709,7 @@ function showLogo(job,src){
   job.image.src=src;
 }
 async function pumpLogos(){
-  if(logoLoading||apiRequests>0||document.hidden)return;
+  if(!playerPageActive||logoLoading||apiRequests>0||document.hidden)return;
   let job;
   for(const candidate of logoQueue){
     if(!candidate.image.isConnected||candidate.image.dataset.logo!==candidate.url){
@@ -4731,16 +4757,80 @@ function setImage(image,fallback,station,lazy=false){
     queueMicrotask(pumpLogos);
   }
 }
-function updateRows(){document.querySelectorAll('[data-station-id]').forEach(row=>row.classList.toggle('active',Number(row.dataset.stationId)===selected))}
+function updateRows(){document.querySelectorAll('[data-station-id]').forEach(row=>{const active=Number(row.dataset.stationId)===selected;row.classList.toggle('active',active);const hint=row.querySelector('.station-current');if(hint)hint.hidden=!active})}
 function renderNow(){const station=stations.find(s=>s.id===selected)||{name:'网络收音机',logo:''};q('#stationName').textContent=station.name;q('#play').textContent=playerState==='playing'?'Ⅱ':'▶';q('#state').textContent=({playing:'正在播放',buffering_or_reconnecting:'正在缓冲',stopped:'已暂停'})[playerState]||'正在恢复连接';q('#progress').classList.toggle('busy',playerState!=='playing'&&playerState!=='stopped');setImage(q('#cover'),q('#coverFallback'),station);updateRows()}
-function stationButton(station,inFavorites=false){const row=document.createElement('button'),img=document.createElement('img'),fallback=document.createElement('span'),text=document.createElement('span'),name=document.createElement('b');row.className='station';row.dataset.stationId=station.id;row.addEventListener('click',()=>selectStation(station.id,inFavorites));img.decoding='async';fallback.className='fallback';name.textContent=station.name;text.append(name);if(station.id===selected){const hint=document.createElement('small');hint.textContent='当前电台';text.append(hint)}row.append(img,fallback,text);setImage(img,fallback,station,true);return row}
-function renderStations(){const host=q('#stations');logoObserver.disconnect();for(const job of logoQueue){if(job.image.id!=='cover')logoQueue.delete(job)}host.replaceChildren();q('#count').textContent=stations.length+' 个电台';if(!stations.length){const e=document.createElement('div');e.className='notice';e.textContent='暂无电台，请到管理页面添加';host.append(e);return}const favoriteHeading=document.createElement('div');favoriteHeading.className='station-group';favoriteHeading.textContent='收藏（'+favorites.length+'）';host.append(favoriteHeading);favorites.map(id=>stations.find(s=>s.id===id)).filter(Boolean).forEach(station=>host.append(stationButton(station,true)));let group='';stations.forEach(station=>{if(station.group!==group){group=station.group;const heading=document.createElement('div');heading.className='station-group';heading.textContent=group;host.append(heading)}host.append(stationButton(station))});updateRows()}
+function updateFavoriteButtons(){
+  document.querySelectorAll('[data-favorite-id]').forEach(button=>{
+    const id=Number(button.dataset.favoriteId),active=favorites.includes(id);
+    const station=stations.find(s=>s.id===id);
+    button.setAttribute('aria-pressed',String(active));
+    button.setAttribute('aria-label',(active?'取消收藏：':'收藏：')+(station?station.name:'电台'));
+    button.title=active?'取消收藏':'加入收藏';
+    button.disabled=favoriteBusy;
+  });
+}
+function stationButton(station,inFavorites=false){
+  const row=document.createElement('div'),select=document.createElement('button'),heart=document.createElement('button'),img=document.createElement('img'),fallback=document.createElement('span'),text=document.createElement('span'),name=document.createElement('b');
+  row.className='station';row.dataset.stationId=station.id;
+  select.type='button';select.className='station-select';
+  select.addEventListener('click',()=>selectStation(station.id,inFavorites));
+  img.decoding='async';fallback.className='fallback';name.textContent=station.name;text.append(name);
+  const hint=document.createElement('small');hint.className='station-current';hint.textContent='当前电台';hint.hidden=station.id!==selected;text.append(hint);
+  select.append(img,fallback,text);
+  heart.type='button';heart.className='favorite-toggle';heart.dataset.favoriteId=station.id;
+  heart.innerHTML='<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 21L3.5 12.5C-2 7 6 0 12 6C18 0 26 7 20.5 12.5Z"/></svg>';
+  heart.addEventListener('click',()=>toggleFavorite(station.id));
+  row.append(select,heart);setImage(img,fallback,station,true);
+  return row;
+}
+function renderFavoriteStations(preserveScroll=true){
+  const host=q('#favoriteStations');
+  if(!host)return;
+  let anchor,top;
+  if(preserveScroll){
+    for(const row of document.querySelectorAll('#stations > .station')){
+      const rect=row.getBoundingClientRect();
+      if(rect.bottom>0&&rect.top<innerHeight){anchor=row;top=rect.top;break}
+    }
+  }
+  for(const select of host.querySelectorAll('.station-select'))logoObserver.unobserve(select);
+  for(const job of logoQueue){if(host.contains(job.image))logoQueue.delete(job)}
+  host.replaceChildren();
+  q('#favoriteHeading').textContent='收藏（'+favorites.length+'）';
+  favorites.map(id=>stations.find(s=>s.id===id)).filter(Boolean).forEach(station=>host.append(stationButton(station,true)));
+  updateFavoriteButtons();updateRows();
+  if(anchor)scrollBy(0,anchor.getBoundingClientRect().top-top);
+}
+function applyFavorites(data){
+  if(data.revision<favoriteRevision)return;
+  favorites=Array.isArray(data.favorites)?data.favorites:[];
+  favoriteRevision=data.revision;
+}
+async function toggleFavorite(id){
+  if(favoriteBusy)return;
+  const action=favorites.includes(id)?'remove':'add';
+  favoriteBusy=true;updateFavoriteButtons();
+  try{
+    const data=await api('/api/user/favorites',{method:'POST',body:new URLSearchParams({id,action})});
+    applyFavorites(data);
+    // A skipped revision may also contain an administrator's catalog edit.
+    if(data.revision===playlistRevision+1)playlistRevision=data.revision;
+    renderFavoriteStations();
+  }catch(e){
+    q('#state').textContent='收藏保存失败：'+e.message;alert('收藏保存失败：'+e.message);
+  }finally{
+    favoriteBusy=false;updateFavoriteButtons();
+  }
+}
+function renderStations(){const host=q('#stations');logoObserver.disconnect();for(const job of logoQueue){if(job.image.id!=='cover')logoQueue.delete(job)}host.replaceChildren();q('#count').textContent=stations.length+' 个电台';if(!stations.length){const e=document.createElement('div');e.className='notice';e.textContent='暂无电台，请到管理页面添加';host.append(e);return}const favoriteHeading=document.createElement('div'),favoriteHost=document.createElement('div');favoriteHeading.className='station-group';favoriteHeading.id='favoriteHeading';favoriteHost.id='favoriteStations';host.append(favoriteHeading,favoriteHost);renderFavoriteStations(false);let group='';stations.forEach(station=>{if(station.group!==group){group=station.group;const heading=document.createElement('div');heading.className='station-group';heading.textContent=group;host.append(heading)}host.append(stationButton(station))});updateRows();updateFavoriteButtons()}
 function applyPlayer(data){playerState=data.state||playerState;if(Number.isInteger(data.selected_station))selected=data.selected_station;if(Number.isInteger(data.volume))q('#volume').value=data.volume;if(Number.isInteger(data.sleep_timer_minutes)){q('#sleepTimer').value=String(data.sleep_timer_minutes);q('#sleepTimer').title=data.sleep_timer_minutes&&Number.isInteger(data.sleep_timer_remaining_seconds)?'剩余约 '+Math.ceil(data.sleep_timer_remaining_seconds/60)+' 分钟':''}applyDeviceTime(data);renderNow()}
-async function loadStations(){const data=await api('/api/user/stations',{},30000);stations=Array.isArray(data.stations)?data.stations:[];favorites=Array.isArray(data.favorites)?data.favorites:[];selected=data.selected;playlistRevision=data.revision||0;renderStations();renderNow()}
+async function loadStations(){const data=await api('/api/user/stations',{},30000),next=Array.isArray(data.stations)?data.stations:[],changed=JSON.stringify(next)!==JSON.stringify(stations);stations=next;applyFavorites(data);selected=data.selected;playlistRevision=data.revision||0;if(changed)renderStations();else renderFavoriteStations();renderNow()}
 async function command(url){try{applyPlayer(await api(url,{method:'POST'}))}catch(e){q('#state').textContent=e.message;alert(e.message)}}
 function selectStation(id,inFavorites=false){selected=id;playerState='buffering_or_reconnecting';renderNow();command('/api/user/stations/select?id='+encodeURIComponent(id)+(inFavorites?'&context=favorites':''))}
-function scheduleRefresh(){clearTimeout(refreshTimer);refreshTimer=setTimeout(refresh,document.hidden?30000:5000)}
-async function refresh(){clearTimeout(refreshTimer);if(refreshBusy)return;refreshBusy=true;try{const data=await api('/api/user/player/status');applyPlayer(data);if(data.playlist_revision!==playlistRevision)await loadStations()}catch(e){q('#state').textContent='设备连接失败：'+e.message}finally{refreshBusy=false;scheduleRefresh()}}
+function scheduleRefresh(){clearTimeout(refreshTimer);if(playerPageActive)refreshTimer=setTimeout(refresh,document.hidden?30000:5000)}
+async function refresh(){clearTimeout(refreshTimer);if(!playerPageActive||refreshBusy)return;refreshBusy=true;try{const data=await api('/api/user/player/status');applyPlayer(data);if(data.playlist_revision!==playlistRevision)await loadStations()}catch(e){q('#state').textContent='设备连接失败：'+e.message}finally{refreshBusy=false;scheduleRefresh()}}
+window.addEventListener('pagehide',()=>{playerPageActive=false;clearTimeout(refreshTimer)});
+window.addEventListener('pageshow',event=>{if(event.persisted){playerPageActive=true;refresh();pumpLogos()}});
 q('#play').addEventListener('click',()=>command(playerState==='playing'?'/api/user/player/stop':'/api/user/player/play'));q('#previous').addEventListener('click',()=>command('/api/user/player/previous'));q('#next').addEventListener('click',()=>command('/api/user/player/next'));q('#volume').addEventListener('input',e=>{clearTimeout(volumeTimer);volumeTimer=setTimeout(()=>command('/api/user/player/volume?value='+encodeURIComponent(e.target.value)),180)});q('#sleepTimer').addEventListener('change',e=>command('/api/user/player/sleep-timer?minutes='+encodeURIComponent(e.target.value)));
 document.addEventListener('visibilitychange',()=>{if(document.hidden){scheduleRefresh()}else{refresh();pumpLogos()}});setInterval(renderClock,1000);renderClock();refresh();api('/api/user/theme').then(theme=>{document.documentElement.style.setProperty('--bg',theme.background);document.documentElement.style.setProperty('--accent',theme.accent);document.body.style.backgroundColor=theme.background;q('meta[name="theme-color"]').content=theme.background;const t=textureStyles[theme.texture]||textureStyles.none;q('.app').style.backgroundImage=t[0];q('.app').style.backgroundSize=t[1]}).catch(e=>{console.warn('页面主题加载失败',e)});
 </script></body></html>
@@ -4807,6 +4897,9 @@ void configureWebServerV8() {
   server.on("/api/user/stations", HTTP_GET, [] { sendPlaylistJson(false); });
   server.on("/api/user/theme", HTTP_GET, [] { sendJson(uiThemeJson()); });
   server.on("/api/user/stations/select", HTTP_POST, handleUserSelectStation);
+  server.on("/api/user/favorites", HTTP_POST, [] {
+    handleSetFavoriteStation(true);
+  });
   server.on("/api/user/player/status", HTTP_GET, handleUserPlayerStatus);
   server.on("/api/user/player/play", HTTP_POST, handleUserPlay);
   server.on("/api/user/player/stop", HTTP_POST, handleUserStop);
