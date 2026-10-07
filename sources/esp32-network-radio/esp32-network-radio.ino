@@ -1,5 +1,5 @@
 /*
- * Network Radio 4.9.0 standalone Arduino sketch.
+ * Network Radio 4.9.1 standalone Arduino sketch.
  * Project-local source dependencies are inlined in this file.
  *
  * The superseded V4 test-tone/I2S path and unused legacy web pages have
@@ -9,7 +9,7 @@
 
 /* Network Radio 3.0: player UI, administration UI, and WS2812B status LED. */
 
-#define NETWORK_RADIO_VERSION "4.9.0"
+#define NETWORK_RADIO_VERSION "4.9.1"
 #define NETWORK_RADIO_MAX_STATIONS 512
 #ifdef NETWORK_RADIO_NO_ENTRYPOINT
 #define NETWORK_RADIO_V8_NO_ENTRYPOINT
@@ -83,7 +83,7 @@ void audio_process_i2s(int32_t *outBuff, int16_t validSamples,
 
 namespace config {
 #ifndef NETWORK_RADIO_VERSION
-#define NETWORK_RADIO_VERSION "4.9.0"
+#define NETWORK_RADIO_VERSION "4.9.1"
 #endif
 constexpr char kFirmwareVersion[] = NETWORK_RADIO_VERSION;
 constexpr uint32_t kSerialBaud = 115200;
@@ -4638,28 +4638,116 @@ constexpr char kUserHtmlV301[] PROGMEM = R"HTML(
 <body><main class="app"><time id="deviceTime" class="clock">正在校时</time><a class="settings" href="/admin" aria-label="进入管理页面" title="设置">⚙</a><section class="hero"><div class="cover-wrap"><img id="cover" class="cover" alt="当前电台台标"><div id="coverFallback" class="cover-fallback">R</div></div><div id="stationName" class="station-name">加载中…</div><div id="state" class="state">正在连接设备</div></section><div id="progress" class="progress"><i></i></div><nav class="controls" aria-label="播放控制"><button id="previous" aria-label="上一台">◀</button><button id="play" class="play" aria-label="播放或暂停">▶</button><button id="next" aria-label="下一台">▶</button></nav><div class="volume"><span>🔉</span><input id="volume" type="range" min="0" max="21" aria-label="音量"><span>🔊</span><select id="sleepTimer" class="sleep-timer" aria-label="播放定时"><option value="0">定时关闭</option><option value="15">15 分钟</option><option value="30">30 分钟</option><option value="45">45 分钟</option><option value="60">60 分钟</option><option value="90">90 分钟</option><option value="120">120 分钟</option></select></div><div class="list-title"><h2>电台列表</h2><span id="count" class="count"></span></div><section id="stations" class="station-list"></section></main>
 <script>
 const q=s=>document.querySelector(s),textureStyles={none:['none','auto'],dots:['radial-gradient(#ffffff24 1px,transparent 1px)','18px 18px'],grid:['linear-gradient(#ffffff16 1px,transparent 1px),linear-gradient(90deg,#ffffff16 1px,transparent 1px)','24px 24px'],diagonal:['repeating-linear-gradient(135deg,#ffffff0d 0 2px,transparent 2px 12px)','auto'],cloud:['radial-gradient(circle at 12px 14px,transparent 9px,#ffffff1f 10px 11px,transparent 12px),radial-gradient(circle at 28px 14px,transparent 9px,#ffffff1f 10px 11px,transparent 12px)','40px 28px'],lattice:['linear-gradient(45deg,#ffffff14 12.5%,transparent 12.5% 37.5%,#ffffff14 37.5% 62.5%,transparent 62.5% 87.5%,#ffffff14 87.5%)','32px 32px'],waves:['radial-gradient(ellipse at 50% 100%,transparent 11px,#ffffff1c 12px 13px,transparent 14px)','34px 18px'],bamboo:['repeating-linear-gradient(90deg,transparent 0 30px,#ffffff16 31px 33px,transparent 34px 62px),repeating-linear-gradient(0deg,transparent 0 54px,#ffffff0d 55px 57px,transparent 58px 86px)','64px 88px'],ricepaper:['linear-gradient(25deg,#ffffff0a 1px,transparent 1px),linear-gradient(115deg,#ffffff08 1px,transparent 1px)','37px 53px,41px 47px'],porcelain:['radial-gradient(circle at 0 0,transparent 15px,#ffffff20 16px 17px,transparent 18px),radial-gradient(circle at 100% 100%,transparent 15px,#ffffff20 16px 17px,transparent 18px)','40px 40px']};
-let stations=[],favorites=[],selected=-1,playerState='stopped',playlistRevision=0,refreshBusy=false,volumeTimer,deviceEpoch=0,deviceEpochSetAt=0;
-async function api(url,options){const r=await fetch(url,options);const t=await r.text();let d={};try{d=t?JSON.parse(t):{}}catch(_){d={error:t||'请求失败'}}if(!r.ok)throw Error(d.error||'请求失败');return d}
+let stations=[],favorites=[],selected=-1,playerState='stopped',playlistRevision=0,refreshBusy=false,refreshTimer,volumeTimer,deviceEpoch=0,deviceEpochSetAt=0,apiRequests=0;
+async function api(url,options={},timeoutMs=10000){
+  const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),timeoutMs);
+  ++apiRequests;
+  try{
+    const r=await fetch(url,{...options,signal:controller.signal}),t=await r.text();
+    let d;
+    try{d=JSON.parse(t)}catch(_){throw Error('设备返回了无效响应')}
+    if(!r.ok)throw Error(d.error||'请求失败');
+    return d;
+  }catch(e){
+    if(controller.signal.aborted)throw Error('设备响应超时，请稍后重试');
+    throw e;
+  }finally{
+    clearTimeout(timer);
+    --apiRequests;
+    pumpLogos();
+  }
+}
 function renderClock(){if(!deviceEpoch){q('#deviceTime').textContent='正在校时';return}const elapsed=Math.floor((Date.now()-deviceEpochSetAt)/1000),d=new Date((deviceEpoch+elapsed+28800)*1000),pad=n=>String(n).padStart(2,'0');q('#deviceTime').textContent=d.getUTCFullYear()+'-'+pad(d.getUTCMonth()+1)+'-'+pad(d.getUTCDate())+' '+pad(d.getUTCHours())+':'+pad(d.getUTCMinutes())+':'+pad(d.getUTCSeconds())}
 function applyDeviceTime(data){if(data.time_synced&&Number.isInteger(data.epoch)&&data.epoch>0){deviceEpoch=data.epoch;deviceEpochSetAt=Date.now()}else if(data.time_synced===false){deviceEpoch=0}renderClock()}
 function safeLogo(name){return typeof name==='string'&&/^[A-Za-z0-9._-]+$/.test(name)?'/logos/'+encodeURIComponent(name):''}
-function setImage(image,fallback,station){const name=(station&&station.name||'R').trim().slice(0,1).toUpperCase();fallback.textContent=name||'R';const url=safeLogo(station&&station.logo);if(!url){image.style.display='none';fallback.style.display='grid';return}image.style.display='block';fallback.style.display='none';image.onerror=()=>{image.style.display='none';fallback.style.display='grid'};image.src=url}
+const logoQueue=new Set(),logoCache=new Map(),logoTargets=new WeakMap();
+let logoLoading=false;
+// Native lazy loading can still flood the single-client device HTTP server.
+const logoObserver=new IntersectionObserver(entries=>{
+  for(const entry of entries){
+    const job=logoTargets.get(entry.target);
+    if(!job)continue;
+    job.visible=entry.isIntersecting;
+    if(job.visible)logoQueue.add(job);else logoQueue.delete(job);
+  }
+  pumpLogos();
+},{rootMargin:'100px'});
+function showLogo(job,src){
+  if(!job.image.isConnected||job.image.dataset.logo!==job.url)return;
+  if(job.image.getAttribute('src')===src)return;
+  job.image.onload=()=>{job.image.style.display='block';job.fallback.style.display='none'};
+  job.image.onerror=()=>{
+    job.image.style.display='none';job.fallback.style.display='grid';
+    console.warn('台标无法显示：'+job.url);
+  };
+  job.image.src=src;
+}
+async function pumpLogos(){
+  if(logoLoading||apiRequests>0||document.hidden)return;
+  let job;
+  for(const candidate of logoQueue){
+    if(!candidate.image.isConnected||candidate.image.dataset.logo!==candidate.url){
+      logoQueue.delete(candidate);
+    }else if(candidate.visible){
+      if(!job||candidate.image.id==='cover')job=candidate;
+    }
+  }
+  if(!job)return;
+  logoQueue.delete(job);
+  const cached=logoCache.get(job.url);
+  if(cached){showLogo(job,cached);queueMicrotask(pumpLogos);return}
+  logoLoading=true;
+  const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),10000);
+  try{
+    const response=await fetch(job.url,{signal:controller.signal});
+    if(!response.ok)throw Error('HTTP '+response.status);
+    const blob=await response.blob(),src=URL.createObjectURL(blob);
+    logoCache.set(job.url,src);
+    showLogo(job,src);
+  }catch(e){
+    console.warn('台标加载失败：'+job.url,e);
+  }finally{
+    clearTimeout(timer);
+    logoLoading=false;
+    pumpLogos();
+  }
+}
+function setImage(image,fallback,station,lazy=false){
+  const name=(station&&station.name||'R').trim().slice(0,1).toUpperCase();
+  fallback.textContent=name||'R';
+  const url=safeLogo(station&&station.logo);
+  if(image.dataset.logo===url)return;
+  image.dataset.logo=url;
+  image.onload=null;image.onerror=null;image.removeAttribute('src');
+  image.style.display='none';fallback.style.display='grid';
+  if(!url)return;
+  const job={image,fallback,url,visible:!lazy};
+  if(lazy){
+    logoTargets.set(image.parentElement,job);
+    logoObserver.observe(image.parentElement);
+  }else{
+    logoQueue.add(job);
+    // Let a click's control request start before its cover download.
+    queueMicrotask(pumpLogos);
+  }
+}
 function updateRows(){document.querySelectorAll('[data-station-id]').forEach(row=>row.classList.toggle('active',Number(row.dataset.stationId)===selected))}
 function renderNow(){const station=stations.find(s=>s.id===selected)||{name:'网络收音机',logo:''};q('#stationName').textContent=station.name;q('#play').textContent=playerState==='playing'?'Ⅱ':'▶';q('#state').textContent=({playing:'正在播放',buffering_or_reconnecting:'正在缓冲',stopped:'已暂停'})[playerState]||'正在恢复连接';q('#progress').classList.toggle('busy',playerState!=='playing'&&playerState!=='stopped');setImage(q('#cover'),q('#coverFallback'),station);updateRows()}
-function stationButton(station,inFavorites=false){const row=document.createElement('button'),img=document.createElement('img'),fallback=document.createElement('span'),text=document.createElement('span'),name=document.createElement('b');row.className='station';row.dataset.stationId=station.id;row.addEventListener('click',()=>selectStation(station.id,inFavorites));img.loading='lazy';img.decoding='async';fallback.className='fallback';name.textContent=station.name;text.append(name);if(station.id===selected){const hint=document.createElement('small');hint.textContent='当前电台';text.append(hint)}setImage(img,fallback,station);row.append(img,fallback,text);return row}
-function renderStations(){const host=q('#stations');host.replaceChildren();q('#count').textContent=stations.length+' 个电台';if(!stations.length){const e=document.createElement('div');e.className='notice';e.textContent='暂无电台，请到管理页面添加';host.append(e);return}const favoriteHeading=document.createElement('div');favoriteHeading.className='station-group';favoriteHeading.textContent='收藏（'+favorites.length+'）';host.append(favoriteHeading);favorites.map(id=>stations.find(s=>s.id===id)).filter(Boolean).forEach(station=>host.append(stationButton(station,true)));let group='';stations.forEach(station=>{if(station.group!==group){group=station.group;const heading=document.createElement('div');heading.className='station-group';heading.textContent=group;host.append(heading)}host.append(stationButton(station))});updateRows()}
+function stationButton(station,inFavorites=false){const row=document.createElement('button'),img=document.createElement('img'),fallback=document.createElement('span'),text=document.createElement('span'),name=document.createElement('b');row.className='station';row.dataset.stationId=station.id;row.addEventListener('click',()=>selectStation(station.id,inFavorites));img.decoding='async';fallback.className='fallback';name.textContent=station.name;text.append(name);if(station.id===selected){const hint=document.createElement('small');hint.textContent='当前电台';text.append(hint)}row.append(img,fallback,text);setImage(img,fallback,station,true);return row}
+function renderStations(){const host=q('#stations');logoObserver.disconnect();for(const job of logoQueue){if(job.image.id!=='cover')logoQueue.delete(job)}host.replaceChildren();q('#count').textContent=stations.length+' 个电台';if(!stations.length){const e=document.createElement('div');e.className='notice';e.textContent='暂无电台，请到管理页面添加';host.append(e);return}const favoriteHeading=document.createElement('div');favoriteHeading.className='station-group';favoriteHeading.textContent='收藏（'+favorites.length+'）';host.append(favoriteHeading);favorites.map(id=>stations.find(s=>s.id===id)).filter(Boolean).forEach(station=>host.append(stationButton(station,true)));let group='';stations.forEach(station=>{if(station.group!==group){group=station.group;const heading=document.createElement('div');heading.className='station-group';heading.textContent=group;host.append(heading)}host.append(stationButton(station))});updateRows()}
 function applyPlayer(data){playerState=data.state||playerState;if(Number.isInteger(data.selected_station))selected=data.selected_station;if(Number.isInteger(data.volume))q('#volume').value=data.volume;if(Number.isInteger(data.sleep_timer_minutes)){q('#sleepTimer').value=String(data.sleep_timer_minutes);q('#sleepTimer').title=data.sleep_timer_minutes&&Number.isInteger(data.sleep_timer_remaining_seconds)?'剩余约 '+Math.ceil(data.sleep_timer_remaining_seconds/60)+' 分钟':''}applyDeviceTime(data);renderNow()}
-async function loadStations(){const data=await api('/api/user/stations');stations=Array.isArray(data.stations)?data.stations:[];favorites=Array.isArray(data.favorites)?data.favorites:[];selected=data.selected;playlistRevision=data.revision||0;renderStations();renderNow()}
-async function command(url){try{applyPlayer(await api(url,{method:'POST'}))}catch(e){alert(e.message)}}
+async function loadStations(){const data=await api('/api/user/stations',{},30000);stations=Array.isArray(data.stations)?data.stations:[];favorites=Array.isArray(data.favorites)?data.favorites:[];selected=data.selected;playlistRevision=data.revision||0;renderStations();renderNow()}
+async function command(url){try{applyPlayer(await api(url,{method:'POST'}))}catch(e){q('#state').textContent=e.message;alert(e.message)}}
 function selectStation(id,inFavorites=false){selected=id;playerState='buffering_or_reconnecting';renderNow();command('/api/user/stations/select?id='+encodeURIComponent(id)+(inFavorites?'&context=favorites':''))}
-async function refresh(){if(refreshBusy)return;refreshBusy=true;try{const data=await api('/api/user/player/status');applyPlayer(data);if(data.playlist_revision!==playlistRevision)await loadStations()}catch(e){q('#state').textContent='设备连接失败'}finally{refreshBusy=false;setTimeout(refresh,document.hidden?30000:5000)}}
+function scheduleRefresh(){clearTimeout(refreshTimer);refreshTimer=setTimeout(refresh,document.hidden?30000:5000)}
+async function refresh(){clearTimeout(refreshTimer);if(refreshBusy)return;refreshBusy=true;try{const data=await api('/api/user/player/status');applyPlayer(data);if(data.playlist_revision!==playlistRevision)await loadStations()}catch(e){q('#state').textContent='设备连接失败：'+e.message}finally{refreshBusy=false;scheduleRefresh()}}
 q('#play').addEventListener('click',()=>command(playerState==='playing'?'/api/user/player/stop':'/api/user/player/play'));q('#previous').addEventListener('click',()=>command('/api/user/player/previous'));q('#next').addEventListener('click',()=>command('/api/user/player/next'));q('#volume').addEventListener('input',e=>{clearTimeout(volumeTimer);volumeTimer=setTimeout(()=>command('/api/user/player/volume?value='+encodeURIComponent(e.target.value)),180)});q('#sleepTimer').addEventListener('change',e=>command('/api/user/player/sleep-timer?minutes='+encodeURIComponent(e.target.value)));
-document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh()});setInterval(renderClock,1000);renderClock();refresh();api('/api/user/theme').then(theme=>{document.documentElement.style.setProperty('--bg',theme.background);document.documentElement.style.setProperty('--accent',theme.accent);document.body.style.backgroundColor=theme.background;q('meta[name="theme-color"]').content=theme.background;const t=textureStyles[theme.texture]||textureStyles.none;q('.app').style.backgroundImage=t[0];q('.app').style.backgroundSize=t[1]}).catch(()=>{});
+document.addEventListener('visibilitychange',()=>{if(document.hidden){scheduleRefresh()}else{refresh();pumpLogos()}});setInterval(renderClock,1000);renderClock();refresh();api('/api/user/theme').then(theme=>{document.documentElement.style.setProperty('--bg',theme.background);document.documentElement.style.setProperty('--accent',theme.accent);document.body.style.backgroundColor=theme.background;q('meta[name="theme-color"]').content=theme.background;const t=textureStyles[theme.texture]||textureStyles.none;q('.app').style.backgroundImage=t[0];q('.app').style.backgroundSize=t[1]}).catch(e=>{console.warn('页面主题加载失败',e)});
 </script></body></html>
 )HTML";
 
 constexpr char kAdminHtmlV302[] PROGMEM =
-R"HTML(<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>网络收音机 4.9.0 管理</title><style>
+R"HTML(<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>网络收音机 4.9.1 管理</title><style>
 :root{color-scheme:dark}body{max-width:880px;margin:24px auto;padding:0 16px;background:#101827;color:#e5e7eb;font:16px system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif}section,pre,.station,.wifi-network{background:#172234;padding:14px;border-radius:10px;margin:14px 0}button,input,select{box-sizing:border-box;padding:9px;margin:4px;border:0;border-radius:6px}input,select{width:100%}button{background:#38bdf8;color:#062032;font-weight:700;cursor:pointer}button:disabled{opacity:.38;cursor:not-allowed}.warn{background:#fbbf24}.danger{background:#fb7185}.playlist-head,.station-group{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}.playlist-head h2,.station-group strong{margin:0}.station-group{margin:24px 2px 8px;padding:10px 12px;border:1px solid #263b55;border-radius:9px;color:#67e8f9;font-size:18px;font-weight:800}.group-actions{display:flex;flex-wrap:wrap;gap:3px}.group-actions button{min-width:auto;margin:0;padding:7px 10px;font-size:13px}.station{content-visibility:auto;contain-intrinsic-size:170px}.station img,.station .fallback{display:inline-grid;width:48px;height:48px;object-fit:contain;object-position:center;background:#fff;border-radius:8px;vertical-align:middle;margin-right:10px}.station .fallback{place-items:center;background:#e89c27;color:#fff;font-weight:700}.station small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#b7c6da}.actions{display:block}.station button{min-width:82px;padding:11px 17px}.wifi-network{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px}.wifi-network b{overflow:hidden;text-overflow:ellipsis}.wifi-network button{width:auto;margin:0}.active{outline:2px solid #38bdf8}.state{font-size:1.1em;color:#67e8f9;margin-bottom:24px}.transport{display:flex;align-items:center;justify-content:center;gap:clamp(28px,8vw,72px);margin:18px 0 28px}.transport button{display:grid;place-items:center;margin:0}.skip{width:76px;height:64px;border-radius:18px;font-size:25px;background:#263449;color:#dce6f5}.play{width:92px;height:92px;border-radius:50%;font-size:36px;background:#f8fafc;color:#172234;box-shadow:0 10px 28px #0005}.volume-head{display:flex;justify-content:space-between;align-items:center;margin:0 6px 8px;color:#cbd5e1}.volume-head b{color:#fff;font-size:1.15em}.volume{width:calc(100% - 10px);accent-color:#38bdf8}.theme-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.theme-grid label{display:grid;gap:6px}.theme-grid input,.theme-grid select{margin:0}.theme-grid input[type=color]{height:54px;padding:4px;border:1px solid #ffffff26;border-radius:10px;background:#fff;color-scheme:light;cursor:pointer}.theme-grid input[type=color]::-webkit-color-swatch-wrapper{padding:0}.theme-grid input[type=color]::-webkit-color-swatch{border:0;border-radius:6px}.theme-grid input[type=color]::-moz-color-swatch{border:0;border-radius:6px}pre{overflow:auto;white-space:pre-wrap}a{color:#67e8f9}@media(max-width:560px){.theme-grid{grid-template-columns:1fr}.playlist-head{align-items:flex-start}.station{overflow-x:auto;white-space:nowrap;contain-intrinsic-size:190px}.station small{white-space:normal}.station button{min-width:auto;padding:9px 11px;margin:3px 2px}.group-actions{width:100%}.group-actions button{flex:1}}</style></head>
 <body><h1>ESP32-S3 网络收音机</h1><p>版本号：)HTML"
 NETWORK_RADIO_VERSION
