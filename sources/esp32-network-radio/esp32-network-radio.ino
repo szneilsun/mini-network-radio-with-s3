@@ -1,5 +1,5 @@
 /*
- * Network Radio 4.9.2 standalone Arduino sketch.
+ * Network Radio 5.0.0 standalone Arduino sketch.
  * Project-local source dependencies are inlined in this file.
  *
  * The superseded V4 test-tone/I2S path and unused legacy web pages have
@@ -9,7 +9,7 @@
 
 /* Network Radio 3.0: player UI, administration UI, and WS2812B status LED. */
 
-#define NETWORK_RADIO_VERSION "4.9.2"
+#define NETWORK_RADIO_VERSION "5.0.0"
 #define NETWORK_RADIO_MAX_STATIONS 512
 #ifdef NETWORK_RADIO_NO_ENTRYPOINT
 #define NETWORK_RADIO_V8_NO_ENTRYPOINT
@@ -28,8 +28,14 @@ void loop();
 
 #include <Audio.h>
 #include <LittleFS.h>
+#include <driver/i2s_std.h>
+#include <esp_mac.h>
 #include <esp_private/periph_ctrl.h>
 #include <esp32-hal-psram.h>
+#include <esp_raop_receiver.h>
+#include <mdns.h>
+#include <atomic>
+#include <new>
 
 void audio_process_i2s(int32_t *outBuff, int16_t validSamples,
                        bool *continueI2S);
@@ -83,7 +89,7 @@ void audio_process_i2s(int32_t *outBuff, int16_t validSamples,
 
 namespace config {
 #ifndef NETWORK_RADIO_VERSION
-#define NETWORK_RADIO_VERSION "4.9.2"
+#define NETWORK_RADIO_VERSION "5.0.0"
 #endif
 constexpr char kFirmwareVersion[] = NETWORK_RADIO_VERSION;
 constexpr uint32_t kSerialBaud = 115200;
@@ -233,6 +239,7 @@ uint8_t wifiRecoveryCandidateIndex = 0;
 uint32_t wifiRecoveryAttemptStartedAt = 0;
 bool mdnsRunning = false;
 void (*onStationSelected)(uint16_t) = nullptr;
+bool rejectRadioControlDuringAirPlay();
 
 bool requireAdmin();
 uint8_t stationRegionOrder(const char *name);
@@ -1395,6 +1402,7 @@ void handleDeleteStation() {
 }
 
 void handleSelectStation() {
+  if (rejectRadioControlDuringAirPlay()) return;
   uint16_t id;
   if (!parseStationId(id)) {
     sendJson("{\"error\":\"invalid station id\"}", 400);
@@ -1443,12 +1451,128 @@ void handleMoveStation() {
 
 namespace {
 
-Audio audio;
+enum class AudioSource : uint8_t { Radio, AirPlay };
+enum class AirPlayState : uint8_t {
+  Idle,
+  Connected,
+  Buffering,
+  Playing,
+  Paused
+};
+
+constexpr uint32_t kAirPlayEventConnected = 1U << 0;
+constexpr uint32_t kAirPlayEventDisconnected = 1U << 1;
+constexpr uint16_t kAirPlayPort = 5000;
+
+Audio *radioAudio = nullptr;
 Preferences playerPreferences;
 uint8_t playerVolume = 12;  // ESP32-audioI2S range: 0..21
 char playerMessage[96] = "idle";
 bool playerRequested = false;
 bool audioOutputReady = false;
+std::atomic<AudioSource> audioSource{AudioSource::Radio};
+std::atomic<AirPlayState> airPlayState{AirPlayState::Idle};
+std::atomic<uint32_t> airPlayPendingEvents{0};
+std::atomic<bool> airPlaySessionConnected{false};
+raop_handle_t *airPlayHandle = nullptr;
+i2s_chan_handle_t airPlayI2sHandle = nullptr;
+bool airPlayAdvertised = false;
+bool airPlayServiceStopping = false;
+bool resumeRadioAfterAirPlay = false;
+uint32_t nextAirPlayServiceRetryAt = 0;
+char airPlayDeviceName[48] = "Network Radio";
+char airPlayInstanceName[80] = {};
+
+bool radioIsRunning() {
+  return radioAudio != nullptr && radioAudio->isRunning();
+}
+
+size_t radioInputBufferBytes() {
+  return radioAudio != nullptr ? radioAudio->inBufferFilled() : 0;
+}
+
+uint32_t radioSampleRate() {
+  return radioAudio != nullptr ? radioAudio->getSampleRate() : 0;
+}
+
+uint32_t radioBitRate() {
+  return radioAudio != nullptr ? radioAudio->getBitRate() : 0;
+}
+
+const char *airPlayStateName() {
+  switch (airPlayState.load()) {
+    case AirPlayState::Connected: return "connected";
+    case AirPlayState::Buffering: return "buffering";
+    case AirPlayState::Playing: return "playing";
+    case AirPlayState::Paused: return "paused";
+    case AirPlayState::Idle:
+    default: return "idle";
+  }
+}
+
+bool airPlayOwnsAudio() {
+  return audioSource.load() == AudioSource::AirPlay;
+}
+
+bool rejectRadioControlDuringAirPlay() {
+  if (!airPlayOwnsAudio()) return false;
+  sendJson("{\"error\":\"AirPlay session owns the audio output\"}", 409);
+  return true;
+}
+
+void airPlayAudioOutput(const uint8_t *data, size_t len, void *) {
+  i2s_chan_handle_t handle = airPlayI2sHandle;
+  if (!airPlayOwnsAudio() || handle == nullptr || data == nullptr || len == 0) {
+    return;
+  }
+
+  const int16_t *samples = reinterpret_cast<const int16_t *>(data);
+  const size_t sampleCount = len / sizeof(int16_t);
+  uint32_t blockPeak = 0;
+  for (size_t index = 0; index < sampleCount; ++index) {
+    const int32_t sample = samples[index];
+    const uint32_t magnitude =
+        static_cast<uint32_t>(sample < 0 ? -sample : sample);
+    if (magnitude > blockPeak) blockPeak = magnitude;
+  }
+  const uint32_t scaledPeak = blockPeak << 16;
+  if (scaledPeak > audioOutputPeak) audioOutputPeak = scaledPeak;
+
+  size_t bytesWritten = 0;
+  const esp_err_t result =
+      i2s_channel_write(handle, data, len, &bytesWritten, portMAX_DELAY);
+  if (result != ESP_OK || bytesWritten != len) {
+    airPlayState.store(AirPlayState::Buffering);
+  }
+}
+
+void airPlayEventCallback(raop_event_t event, void *, void *) {
+  switch (event) {
+    case RAOP_EVENT_CONNECTED:
+      airPlaySessionConnected.store(true);
+      airPlayState.store(AirPlayState::Connected);
+      airPlayPendingEvents.fetch_or(kAirPlayEventConnected);
+      break;
+    case RAOP_EVENT_DISCONNECTED:
+      airPlaySessionConnected.store(false);
+      airPlayState.store(AirPlayState::Idle);
+      airPlayPendingEvents.fetch_or(kAirPlayEventDisconnected);
+      break;
+    case RAOP_EVENT_BUFFERING:
+    case RAOP_EVENT_STALLED:
+      airPlayState.store(AirPlayState::Buffering);
+      break;
+    case RAOP_EVENT_PLAYING:
+      airPlayState.store(AirPlayState::Playing);
+      break;
+    case RAOP_EVENT_PAUSED:
+    case RAOP_EVENT_STOPPED:
+      airPlayState.store(AirPlayState::Paused);
+      break;
+    default:
+      break;
+  }
+}
 
 void setPlayerMessage(const char *message) {
   strlcpy(playerMessage, message ? message : "", sizeof(playerMessage));
@@ -1463,13 +1587,15 @@ void audioInfo(Audio::msg_t message) {
 }
 
 bool startSelectedStation() {
+  if (airPlayOwnsAudio()) return false;
   if (stationCount == 0 || WiFi.status() != WL_CONNECTED) {
     playerRequested = false;
     setPlayerMessage("waiting for router Wi-Fi");
     return false;
   }
-  audio.stopSong();
-  playerRequested = audio.connecttohost(stations[selectedStation].url);
+  if (radioAudio == nullptr) return false;
+  radioAudio->stopSong();
+  playerRequested = radioAudio->connecttohost(stations[selectedStation].url);
   setPlayerMessage(playerRequested ? "connecting" : "connection failed");
   return playerRequested;
 }
@@ -1479,20 +1605,21 @@ void onPlaylistSelection(uint8_t) {
 }
 
 void handlePlayerStatus() {
-  const char *state = audio.isRunning() ? "playing" :
+  const char *state = radioIsRunning() ? "playing" :
                       (playerRequested ? "buffering_or_reconnecting" : "stopped");
   String json = "{\"state\":\"" + String(state) + "\",\"volume\":" +
                 String(playerVolume) + ",\"selected_station\":" +
                 String(selectedStation) + ",\"playlist_revision\":" +
                 String(playlistRevision) + ",\"input_buffer_bytes\":" +
-                String(audio.inBufferFilled()) + ",\"sample_rate_hz\":" +
-                String(audio.getSampleRate()) + ",\"bitrate\":" +
-                String(audio.getBitRate()) + ",\"message\":\"" +
+                String(radioInputBufferBytes()) + ",\"sample_rate_hz\":" +
+                String(radioSampleRate()) + ",\"bitrate\":" +
+                String(radioBitRate()) + ",\"message\":\"" +
                 jsonEscape(playerMessage) + "\"}";
   sendJson(json);
 }
 
 void handlePlayerPlay() {
+  if (rejectRadioControlDuringAirPlay()) return;
   if (!startSelectedStation()) {
     sendJson("{\"error\":\"router Wi-Fi is not connected\"}", 503);
     return;
@@ -1501,20 +1628,22 @@ void handlePlayerPlay() {
 }
 
 void handlePlayerStop() {
-  audio.stopSong();
+  if (rejectRadioControlDuringAirPlay()) return;
+  if (radioAudio != nullptr) radioAudio->stopSong();
   playerRequested = false;
   setPlayerMessage("stopped");
   handlePlayerStatus();
 }
 
 void handlePlayerVolume() {
+  if (rejectRadioControlDuringAirPlay()) return;
   const int volume = server.arg("value").toInt();
   if (volume < 0 || volume > 21) {
     sendJson("{\"error\":\"volume must be 0..21\"}", 400);
     return;
   }
   playerVolume = static_cast<uint8_t>(volume);
-  audio.setVolume(playerVolume);
+  if (radioAudio != nullptr) radioAudio->setVolume(playerVolume);
   playerPreferences.begin("player", false);
   playerPreferences.putUChar("volume", playerVolume);
   playerPreferences.end();
@@ -2449,12 +2578,22 @@ void updateStatusLed(bool force = false) {
   if (!force && now - lastUpdateAt < kStatusLedRefreshMs) return;
   lastUpdateAt = now;
 
-  if (audio.isRunning() && !playbackAwaitingReady) statusLedError = false;
+  const AirPlayState currentAirPlayState = airPlayState.load();
+  const bool sourcePlaying =
+      airPlayOwnsAudio()
+          ? currentAirPlayState == AirPlayState::Playing
+          : radioIsRunning() && !playbackAwaitingReady;
+  const bool sourceBuffering =
+      airPlayOwnsAudio()
+          ? currentAirPlayState == AirPlayState::Connected ||
+                currentAirPlayState == AirPlayState::Buffering
+          : playbackEnabled;
+  if (sourcePlaying) statusLedError = false;
   StatusLedMode mode = StatusLedMode::Off;
   if (otaInProgress) mode = StatusLedMode::Ota;
   else if (statusLedError || (stationConfigured && WiFi.status() != WL_CONNECTED)) mode = StatusLedMode::Error;
-  else if (audio.isRunning() && !playbackAwaitingReady) mode = StatusLedMode::Playing;
-  else if (playbackEnabled) mode = StatusLedMode::Buffering;
+  else if (sourcePlaying) mode = StatusLedMode::Playing;
+  else if (sourceBuffering) mode = StatusLedMode::Buffering;
 
   uint8_t red = 0, green = 0, blue = 0;
   if (mode == StatusLedMode::Buffering) {
@@ -2967,7 +3106,7 @@ void pausePlayback(const char *message, const char *logKind,
   playbackAwaitingReady = false;
   playbackFaultPending = false;
   statusLedError = false;
-  audio.stopSong();
+  if (radioAudio != nullptr) radioAudio->stopSong();
   playerRequested = false;
   setPlayerMessage(message);
   if (cancelTimer) cancelSleepTimer();
@@ -3016,38 +3155,294 @@ void playBootChime() {
     return;
   }
   playbackEnabled = false;
-  audio.setVolume(kBootChimeVolume);
-  if (!audio.connecttoFS(LittleFS, kBootChimePath)) {
+  if (radioAudio == nullptr) {
+    addLog("boot", "audio output is unavailable");
+    playbackEnabled = true;
+    return;
+  }
+  radioAudio->setVolume(kBootChimeVolume);
+  if (!radioAudio->connecttoFS(LittleFS, kBootChimePath)) {
     addLog("boot", "boot chime could not start");
-    audio.setVolume(playerVolume);
+    radioAudio->setVolume(playerVolume);
     playbackEnabled = true;
     return;
   }
   addLog("boot", "playing startup chime");
   const uint32_t deadline = millis() + kBootChimeMaxMs;
-  while (audio.isRunning() && !timeReached(millis(), deadline)) {
-    audio.loop();
+  while (radioIsRunning() && !timeReached(millis(), deadline)) {
+    radioAudio->loop();
     delay(1);
   }
-  audio.stopSong();
-  audio.setVolume(playerVolume);
+  radioAudio->stopSong();
+  radioAudio->setVolume(playerVolume);
   playbackEnabled = true;
   playerRequested = false;
   playbackAwaitingReady = false;
   playbackFaultPending = false;
 }
 
-void initialiseAudioOutput() {
-  if (audioOutputReady) return;
+bool initialiseAudioOutput() {
+  if (audioOutputReady && radioAudio != nullptr) return true;
+  if (radioAudio == nullptr) {
+    radioAudio = new (std::nothrow) Audio();
+    if (radioAudio == nullptr) {
+      setPlayerMessage("could not allocate radio player");
+      return false;
+    }
+    radioAudio->settings.BUFFER_TRESHOLD_HLS = 32 * 1024;
+  }
   // ESP.restart() does not always reset an allocated ESP-IDF I2S peripheral.
   // Reset both S3 I2S modules before Audio allocates its automatic channel so
   // a software restart cannot leave setPinout() with no available channel.
   periph_module_reset(PERIPH_I2S0_MODULE);
   periph_module_reset(PERIPH_I2S1_MODULE);
-  audio.setPinout(config::kI2sBclk, config::kI2sLrclk,
-                  config::kI2sDataOut);
-  audio.setVolume(playerVolume);
+  if (!radioAudio->setPinout(config::kI2sBclk, config::kI2sLrclk,
+                             config::kI2sDataOut)) {
+    delete radioAudio;
+    radioAudio = nullptr;
+    setPlayerMessage("could not initialize radio I2S");
+    return false;
+  }
+  radioAudio->setVolume(playerVolume);
   audioOutputReady = true;
+  return true;
+}
+
+void destroyRadioAudio() {
+  if (radioAudio == nullptr) return;
+  radioAudio->stopSong();
+  delete radioAudio;
+  radioAudio = nullptr;
+  audioOutputReady = false;
+}
+
+bool initialiseAirPlayOutput() {
+  if (airPlayI2sHandle != nullptr) return true;
+
+  i2s_chan_config_t channelConfig =
+      I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
+  channelConfig.auto_clear = true;
+  channelConfig.dma_desc_num = 8;
+  channelConfig.dma_frame_num = 352;
+  esp_err_t result =
+      i2s_new_channel(&channelConfig, &airPlayI2sHandle, nullptr);
+  if (result != ESP_OK) {
+    airPlayI2sHandle = nullptr;
+    return false;
+  }
+
+  i2s_std_config_t standardConfig = {
+      .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(44100),
+      .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(
+          I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO),
+      .gpio_cfg = {
+          .mclk = I2S_GPIO_UNUSED,
+          .bclk = config::kI2sBclk,
+          .ws = config::kI2sLrclk,
+          .dout = config::kI2sDataOut,
+          .din = I2S_GPIO_UNUSED,
+          .invert_flags = {
+              .mclk_inv = false,
+              .bclk_inv = false,
+              .ws_inv = false,
+          },
+      },
+  };
+  result = i2s_channel_init_std_mode(airPlayI2sHandle, &standardConfig);
+  if (result == ESP_OK) result = i2s_channel_enable(airPlayI2sHandle);
+  if (result != ESP_OK) {
+    i2s_del_channel(airPlayI2sHandle);
+    airPlayI2sHandle = nullptr;
+    return false;
+  }
+  return true;
+}
+
+void destroyAirPlayOutput() {
+  if (airPlayI2sHandle == nullptr) return;
+  i2s_channel_disable(airPlayI2sHandle);
+  i2s_del_channel(airPlayI2sHandle);
+  airPlayI2sHandle = nullptr;
+}
+
+void configureAirPlayIdentity() {
+  uint8_t mac[6] = {};
+  esp_read_mac(mac, ESP_MAC_WIFI_STA);
+  snprintf(airPlayDeviceName, sizeof(airPlayDeviceName),
+           "Network Radio-%02X%02X", mac[4], mac[5]);
+  snprintf(airPlayInstanceName, sizeof(airPlayInstanceName),
+           "%02X%02X%02X%02X%02X%02X@%s", mac[0], mac[1], mac[2], mac[3],
+           mac[4], mac[5], airPlayDeviceName);
+}
+
+bool advertiseAirPlayService() {
+  if (!mdnsRunning || !MDNS.addService("raop", "tcp", kAirPlayPort)) {
+    return false;
+  }
+  if (mdns_service_instance_name_set("_raop", "_tcp",
+                                     airPlayInstanceName) != ESP_OK) {
+    mdns_service_remove("_raop", "_tcp");
+    return false;
+  }
+
+  constexpr const char *txt[][2] = {
+      {"am", "airesp32"}, {"tp", "UDP"},  {"sm", "false"},
+      {"sv", "false"},    {"ek", "1"},    {"et", "0,1"},
+      {"md", "0,1,2"},    {"cn", "0,1"},  {"ch", "2"},
+      {"ss", "16"},       {"sr", "44100"}, {"vn", "3"},
+      {"txtvers", "1"},
+  };
+  for (const auto &item : txt) {
+    MDNS.addServiceTxt("raop", "tcp", item[0], item[1]);
+  }
+  airPlayAdvertised = true;
+  return true;
+}
+
+bool startAirPlayService() {
+  if (airPlayHandle != nullptr || otaInProgress ||
+      WiFi.status() != WL_CONNECTED || !mdnsRunning) {
+    return airPlayHandle != nullptr;
+  }
+
+  uint8_t mac[6] = {};
+  esp_read_mac(mac, ESP_MAC_WIFI_STA);
+  raop_config_t configuration = {};
+  configuration.device_name = airPlayDeviceName;
+  configuration.mac_address = mac;
+  configuration.latency_frames = 88200;
+  configuration.volume_mode = RAOP_VOLUME_SOFTWARE;
+  configuration.mdns_mode = RAOP_MDNS_EXTERNAL;
+  configuration.mdns_hostname = config::kMdnsName;
+  configuration.audio_output_cb = airPlayAudioOutput;
+  configuration.event_cb = airPlayEventCallback;
+
+  const esp_err_t result = raop_init(&configuration, &airPlayHandle);
+  if (result != ESP_OK || !advertiseAirPlayService()) {
+    if (airPlayHandle != nullptr) {
+      raop_deinit(airPlayHandle);
+      airPlayHandle = nullptr;
+    }
+    airPlayAdvertised = false;
+    nextAirPlayServiceRetryAt = millis() + kWifiRetryMs;
+    char message[96] = {};
+    snprintf(message, sizeof(message), "AirPlay service start failed: %s",
+             esp_err_to_name(result));
+    addLog("airplay", message);
+    return false;
+  }
+
+  airPlayState.store(AirPlayState::Idle);
+  addLog("airplay", airPlayDeviceName);
+  return true;
+}
+
+void restoreRadioAfterAirPlaySession(bool shouldResume) {
+  audioSource = AudioSource::Radio;
+  destroyAirPlayOutput();
+  audioOutputPeak = 0;
+  playbackEnabled = shouldResume;
+  playerRequested = false;
+  playbackAwaitingReady = false;
+  playbackFaultPending = false;
+  stationChangePending = shouldResume;
+  statusLedError = false;
+  if (shouldResume) {
+    pendingPlaybackReason = "resuming after AirPlay";
+    playerRequested = true;
+    setPlayerMessage("resuming after AirPlay");
+  } else {
+    setPlayerMessage("stopped");
+  }
+
+  if (!initialiseAudioOutput()) {
+    playbackEnabled = false;
+    stationChangePending = false;
+    statusLedError = true;
+    setPlayerMessage("radio I2S recovery failed");
+    addLog("airplay", "radio I2S recovery failed");
+  } else {
+    addLog("airplay", shouldResume ? "radio playback scheduled"
+                                   : "radio remains paused");
+  }
+}
+
+void finishAirPlaySession(bool restoreRadio) {
+  if (!airPlayOwnsAudio()) return;
+  if (!restoreRadio) {
+    resumeRadioAfterAirPlay = false;
+    audioSource = AudioSource::Radio;
+    destroyAirPlayOutput();
+    audioOutputPeak = 0;
+    return;
+  }
+  const bool shouldResume = restoreRadio && resumeRadioAfterAirPlay;
+  resumeRadioAfterAirPlay = false;
+  restoreRadioAfterAirPlaySession(shouldResume);
+}
+
+void stopAirPlayService(bool restoreRadio) {
+  airPlayServiceStopping = true;
+  raop_handle_t *handle = airPlayHandle;
+  airPlayHandle = nullptr;
+  if (handle != nullptr) raop_deinit(handle);
+  if (airPlayAdvertised) {
+    mdns_service_remove("_raop", "_tcp");
+    airPlayAdvertised = false;
+  }
+  airPlayPendingEvents.store(0);
+  airPlaySessionConnected.store(false);
+  airPlayState.store(AirPlayState::Idle);
+  finishAirPlaySession(restoreRadio);
+  airPlayServiceStopping = false;
+}
+
+void beginAirPlaySession() {
+  if (airPlayOwnsAudio() || otaInProgress) return;
+  resumeRadioAfterAirPlay = playbackEnabled;
+  cancelSleepTimer();
+  playbackEnabled = false;
+  stationChangePending = false;
+  playerRequested = false;
+  playbackAwaitingReady = false;
+  playbackFaultPending = false;
+  if (radioAudio != nullptr) radioAudio->stopSong();
+  destroyRadioAudio();
+  audioSource = AudioSource::AirPlay;
+  audioOutputPeak = 0;
+  statusLedError = false;
+
+  if (!initialiseAirPlayOutput()) {
+    addLog("airplay", "AirPlay I2S initialization failed");
+    statusLedError = true;
+    stopAirPlayService(true);
+    nextAirPlayServiceRetryAt = millis() + kWifiRetryMs;
+    return;
+  }
+  addLog("airplay", "session connected; radio paused");
+}
+
+void maintainAirPlay() {
+  const uint32_t events = airPlayPendingEvents.exchange(0);
+  if (!airPlayServiceStopping) {
+    if ((events & kAirPlayEventDisconnected) != 0) {
+      finishAirPlaySession(true);
+      addLog("airplay", "session disconnected");
+    } else if ((events & kAirPlayEventConnected) != 0 &&
+               airPlaySessionConnected.load()) {
+      beginAirPlaySession();
+    }
+  }
+
+  if (otaInProgress || otaSucceeded) return;
+  if (WiFi.status() != WL_CONNECTED) {
+    if (airPlayHandle != nullptr) stopAirPlayService(true);
+    return;
+  }
+  if (airPlayHandle == nullptr &&
+      timeReached(millis(), nextAirPlayServiceRetryAt)) {
+    startAirPlayService();
+  }
 }
 
 void loadSecurity() {
@@ -3271,18 +3666,22 @@ void schedulePlaybackRetry(const char *reason) {
 }
 
 bool startSelectedStationV8(const char *reason) {
+  if (airPlayOwnsAudio()) return false;
   if (stationCount == 0 || WiFi.status() != WL_CONNECTED) {
     schedulePlaybackRetry("waiting for router Wi-Fi");
     return false;
   }
   // Delay I2S allocation until playback is actually needed. This keeps the
   // provisioning AP and management UI alive if an earlier reset left I2S busy.
-  initialiseAudioOutput();
-  audio.stopSong();
+  if (!initialiseAudioOutput()) {
+    schedulePlaybackRetry("could not initialize radio audio output");
+    return false;
+  }
+  radioAudio->stopSong();
   // ESP32-audioI2S keeps its I2S channel alive after the first setPinout().
   // Re-registering that channel causes an ESP_ERR_INVALID_STATE abort, so a
   // recovery rebuild stops the decoder and reconnects only; setup owns I2S init.
-  playerRequested = audio.connecttohost(stations[selectedStation].url);
+  playerRequested = radioAudio->connecttohost(stations[selectedStation].url);
   if (!playerRequested) {
     schedulePlaybackRetry("could not start audio stream");
     return false;
@@ -3299,6 +3698,10 @@ bool startSelectedStationV8(const char *reason) {
 }
 
 void onPlaylistSelectionV8(uint16_t) {
+  if (airPlayOwnsAudio()) {
+    addLog("airplay", "station selection ignored during AirPlay");
+    return;
+  }
   playbackEnabled = true;
   stationChangePending = true;
   pendingPlaybackReason = "station selected";
@@ -3424,7 +3827,7 @@ void maintainNetworkAndPlayback() {
   if (connected) maintainWifiRecovery();
   if (!connected) {
     if (wasStationConnected) {
-      audio.stopSong();
+      if (radioAudio != nullptr) radioAudio->stopSong();
       playerRequested = false;
       playbackAwaitingReady = false;
       playbackFaultPending = false;
@@ -3438,9 +3841,11 @@ void maintainNetworkAndPlayback() {
   }
   if (!wasStationConnected) {
     wasStationConnected = true;
+    startMdns();
     addLog("wifi", "router Wi-Fi connected");
     nextPlaybackRetryAt = millis() + 500;
   }
+  if (airPlayOwnsAudio()) return;
   // Run the potentially slow network connection only after the HTTP handler
   // has returned its response, so the selected station updates immediately.
   if (stationChangePending) {
@@ -3454,34 +3859,39 @@ void maintainNetworkAndPlayback() {
     char reason[sizeof(playbackFaultMessage)] = {};
     strlcpy(reason, playbackFaultMessage[0] ? playbackFaultMessage :
                                        "audio stream failed", sizeof(reason));
-    audio.stopSong();
+    if (radioAudio != nullptr) radioAudio->stopSong();
     schedulePlaybackRetry(reason);
     return;
   }
   if (playbackEnabled && playbackAwaitingReady &&
       timeReached(now, playbackAttemptStartedAt + kPlaybackStartupTimeoutMs)) {
-    audio.stopSong();
+    if (radioAudio != nullptr) radioAudio->stopSong();
     schedulePlaybackRetry("audio stream start timed out");
     return;
   }
   // A stream which ended after becoming ready is rebuilt from its playlist
   // URL.  This also forces HLS to fetch the current media sequence.
-  if (playbackEnabled && !playbackAwaitingReady && !audio.isRunning() &&
+  if (playbackEnabled && !playbackAwaitingReady && !radioIsRunning() &&
       timeReached(now, nextPlaybackRetryAt)) {
     startSelectedStationV8("rebuilding playback chain");
   }
 }
 
 const char *playerStateForUi() {
+  if (airPlayOwnsAudio()) return airPlayStateName();
   if (!playbackEnabled) return "stopped";
   if (stationChangePending || playbackAwaitingReady || playerRequested ||
       playbackFailures > 0) return "buffering_or_reconnecting";
-  if (audio.isRunning()) return "playing";
+  if (radioIsRunning()) return "playing";
   return "buffering_or_reconnecting";
 }
 
 String adminPlayerStatusJson() {
   return "{\"state\":\"" + String(playerStateForUi()) +
+         "\",\"source\":\"" +
+             String(airPlayOwnsAudio() ? "airplay" : "radio") +
+         "\",\"airplay\":{\"state\":\"" + String(airPlayStateName()) +
+             "\"}" +
          "\",\"volume\":" + String(playerVolume) +
          ",\"selected_station\":" + String(selectedStation) +
          ",\"playlist_revision\":" + String(playlistRevision) +
@@ -3492,9 +3902,10 @@ String adminPlayerStatusJson() {
              String(sleepTimerRemainingSeconds()) +
          ",\"night_led_override\":" +
              String(nightLedOverride ? "true" : "false") +
-         ",\"input_buffer_bytes\":" + String(audio.inBufferFilled()) +
-         ",\"sample_rate_hz\":" + String(audio.getSampleRate()) +
-         ",\"bitrate\":" + String(audio.getBitRate()) +
+         ",\"input_buffer_bytes\":" + String(radioInputBufferBytes()) +
+         ",\"sample_rate_hz\":" +
+             String(airPlayOwnsAudio() ? 44100 : radioSampleRate()) +
+         ",\"bitrate\":" + String(radioBitRate()) +
          ",\"message\":\"" + jsonEscape(playerMessage) + "\"}";
 }
 
@@ -3529,13 +3940,21 @@ void handleStatusV8() {
                 String(connected ? "true" : "false") + ",\"station_ip\":\"" +
                 (connected ? WiFi.localIP().toString() : "") + "\",\"setup_ap_ssid\":\"" +
                 String(accessPointSsid) + "\",\"setup_ap_password_is_separate\":true},\"player\":{\"state\":\"" +
-                state + "\",\"selected_name\":\"" + jsonEscape(stations[selectedStation].name) +
+                state + "\",\"source\":\"" +
+                String(airPlayOwnsAudio() ? "airplay" : "radio") +
+                "\",\"selected_name\":\"" + jsonEscape(stations[selectedStation].name) +
                 "\",\"volume\":" + String(playerVolume) + ",\"message\":\"" +
                 jsonEscape(playerMessage) + "\",\"failures\":" + String(playbackFailures) +
                 ",\"playlist_revision\":" + String(playlistRevision) +
                 ",\"sleep_timer_minutes\":" + String(sleepTimerMinutes) +
                 ",\"sleep_timer_remaining_seconds\":" +
                 String(sleepTimerRemainingSeconds()) +
+                "},\"airplay\":{\"state\":\"" + String(airPlayStateName()) +
+                "\",\"device_name\":\"" + jsonEscape(airPlayDeviceName) +
+                "\",\"available\":" +
+                String(airPlayHandle != nullptr && airPlayAdvertised
+                           ? "true"
+                           : "false") +
                 "},\"time\":{\"synced\":" +
                 String(networkTimeSynced ? "true" : "false") +
                 ",\"epoch\":" + String(currentEpochSeconds()) +
@@ -3551,6 +3970,7 @@ void handleStatusV8() {
 void handlePlayerStatusV8() { if (requireAdmin()) sendAdminPlayerStatus(); }
 void handlePlayerPlayV8() {
   if (!requireAdmin()) return;
+  if (rejectRadioControlDuringAirPlay()) return;
   playbackEnabled = true;
   stationChangePending = true;
   pendingPlaybackReason = "play requested";
@@ -3563,11 +3983,13 @@ void handlePlayerPlayV8() {
 }
 void handlePlayerStopV8() {
   if (!requireAdmin()) return;
+  if (rejectRadioControlDuringAirPlay()) return;
   pausePlayback("stopped by user", "player", "stopped by user");
   sendAdminPlayerStatus();
 }
 void handlePlayerVolumeV8() {
   if (!requireAdmin()) return;
+  if (rejectRadioControlDuringAirPlay()) return;
   const String value = server.arg("value");
   uint16_t volume = 0;
   if (value.isEmpty()) {
@@ -3589,10 +4011,10 @@ void handlePlayerVolumeV8() {
   if (playerVolume != volume) {
     const uint8_t previousVolume = playerVolume;
     playerVolume = static_cast<uint8_t>(volume);
-    audio.setVolume(playerVolume);
+    if (radioAudio != nullptr) radioAudio->setVolume(playerVolume);
     if (!playerPreferences.begin("player", false)) {
       playerVolume = previousVolume;
-      audio.setVolume(playerVolume);
+      if (radioAudio != nullptr) radioAudio->setVolume(playerVolume);
       sendJson("{\"error\":\"could not save volume\"}", 500);
       return;
     }
@@ -3600,7 +4022,7 @@ void handlePlayerVolumeV8() {
     playerPreferences.end();
     if (!saved) {
       playerVolume = previousVolume;
-      audio.setVolume(playerVolume);
+      if (radioAudio != nullptr) radioAudio->setVolume(playerVolume);
       sendJson("{\"error\":\"could not save volume\"}", 500);
       return;
     }
@@ -3610,6 +4032,7 @@ void handlePlayerVolumeV8() {
 
 void handlePlayerPreviousV9() {
   if (!requireAdmin()) return;
+  if (rejectRadioControlDuringAirPlay()) return;
   if (stationCount == 0) { sendJson("{\"error\":\"playlist is empty\"}", 409); return; }
   const uint16_t previousSelection = selectedStation;
   selectedStation = adjacentStationIndex(true);
@@ -3631,6 +4054,7 @@ void handlePlayerPreviousV9() {
 
 void handlePlayerNextV9() {
   if (!requireAdmin()) return;
+  if (rejectRadioControlDuringAirPlay()) return;
   if (stationCount == 0) { sendJson("{\"error\":\"playlist is empty\"}", 409); return; }
   const uint16_t previousSelection = selectedStation;
   selectedStation = adjacentStationIndex(false);
@@ -3654,6 +4078,10 @@ String userPlayerStatusJson() {
   // Public player endpoints deliberately omit playerMessage and stream URLs.
   // Audio-library diagnostics can include an upstream host or redirect URL.
   return "{\"state\":\"" + String(playerStateForUi()) +
+         "\",\"source\":\"" +
+             String(airPlayOwnsAudio() ? "airplay" : "radio") +
+         "\",\"airplay\":{\"state\":\"" + String(airPlayStateName()) +
+             "\"}" +
          "\",\"volume\":" + String(playerVolume) +
          ",\"selected_station\":" + String(selectedStation) +
          ",\"playlist_revision\":" + String(playlistRevision) +
@@ -3672,6 +4100,7 @@ bool isAllowedSleepTimerMinutes(uint16_t minutes) {
 }
 
 void handleUserSleepTimer() {
+  if (rejectRadioControlDuringAirPlay()) return;
   const String value = server.arg("minutes");
   uint16_t minutes = 0;
   if (value.isEmpty()) {
@@ -3710,6 +4139,7 @@ void handleUserSleepTimer() {
 }
 
 void requestUserPlayback(const char *reason) {
+  if (airPlayOwnsAudio()) return;
   playbackEnabled = true;
   stationChangePending = true;
   pendingPlaybackReason = reason;
@@ -3916,6 +4346,10 @@ void pollTouchButtons() {
       (nextPressed && (previousTouch.pressed || playPauseTouch.pressed)) ||
       (playPausePressed && (previousTouch.pressed || nextTouch.pressed));
   if (pressedCount != 1 || anotherPadHeld || stationCount == 0) return;
+  if (airPlayOwnsAudio()) {
+    addLog("touch", "touch control ignored during AirPlay");
+    return;
+  }
 
   if (playPausePressed) {
     if (touchDebugEnabled) {
@@ -4023,6 +4457,7 @@ void printTouchDebugIfDue() {
 }
 
 void handleUserSelectStation() {
+  if (rejectRadioControlDuringAirPlay()) return;
   uint16_t id;
   if (!parseStationId(id)) {
     sendJson("{\"error\":\"invalid station id\"}", 400);
@@ -4042,16 +4477,19 @@ void handleUserSelectStation() {
 void handleUserPlayerStatus() { sendUserPlayerStatus(); }
 
 void handleUserPlay() {
+  if (rejectRadioControlDuringAirPlay()) return;
   requestUserPlayback("play requested from user page");
   sendUserPlayerStatus();
 }
 
 void handleUserStop() {
+  if (rejectRadioControlDuringAirPlay()) return;
   pausePlayback("stopped by user", "player", "stopped from user page");
   sendUserPlayerStatus();
 }
 
 void handleUserPrevious() {
+  if (rejectRadioControlDuringAirPlay()) return;
   if (stationCount == 0) { sendJson("{\"error\":\"playlist is empty\"}", 409); return; }
   const uint16_t target = adjacentStationIndex(true);
   if (!selectStationForUser(target, "previous station from user page")) {
@@ -4062,6 +4500,7 @@ void handleUserPrevious() {
 }
 
 void handleUserNext() {
+  if (rejectRadioControlDuringAirPlay()) return;
   if (stationCount == 0) { sendJson("{\"error\":\"playlist is empty\"}", 409); return; }
   const uint16_t target = adjacentStationIndex(false);
   if (!selectStationForUser(target, "next station from user page")) {
@@ -4072,6 +4511,7 @@ void handleUserNext() {
 }
 
 void handleUserVolume() {
+  if (rejectRadioControlDuringAirPlay()) return;
   const String value = server.arg("value");
   if (value.isEmpty()) {
     sendJson("{\"error\":\"volume must be 0..21\"}", 400);
@@ -4093,10 +4533,10 @@ void handleUserVolume() {
   if (playerVolume != volume) {
     const uint8_t previousVolume = playerVolume;
     playerVolume = static_cast<uint8_t>(volume);
-    audio.setVolume(playerVolume);
+    if (radioAudio != nullptr) radioAudio->setVolume(playerVolume);
     if (!playerPreferences.begin("player", false)) {
       playerVolume = previousVolume;
-      audio.setVolume(playerVolume);
+      if (radioAudio != nullptr) radioAudio->setVolume(playerVolume);
       sendJson("{\"error\":\"could not save volume\"}", 500);
       return;
     }
@@ -4104,7 +4544,7 @@ void handleUserVolume() {
     playerPreferences.end();
     if (!saved) {
       playerVolume = previousVolume;
-      audio.setVolume(playerVolume);
+      if (radioAudio != nullptr) radioAudio->setVolume(playerVolume);
       sendJson("{\"error\":\"could not save volume\"}", 500);
       return;
     }
@@ -4518,16 +4958,25 @@ void handleFactoryReset() {
 }
 
 void resumePlaybackAfterFailedOta() {
-  if (!playbackWasEnabledBeforeOta) return;
+  const bool shouldResume = playbackWasEnabledBeforeOta;
   playbackWasEnabledBeforeOta = false;
-  playbackEnabled = true;
-  stationChangePending = true;
+  playbackEnabled = shouldResume;
+  stationChangePending = shouldResume;
   pendingPlaybackReason = "resuming after failed firmware upload";
-  playerRequested = true;
+  playerRequested = shouldResume;
   playbackAwaitingReady = false;
   playbackFaultPending = false;
   statusLedError = false;
-  addLog("ota", "resuming playback after failed upload");
+  if (!initialiseAudioOutput()) {
+    playbackEnabled = false;
+    stationChangePending = false;
+    statusLedError = true;
+    addLog("ota", "radio I2S recovery failed after upload");
+  } else {
+    addLog("ota", shouldResume ? "resuming playback after failed upload"
+                               : "radio remains paused after failed upload");
+  }
+  nextAirPlayServiceRetryAt = 0;
 }
 
 void failOtaUpload(const char *reason) {
@@ -4546,7 +4995,8 @@ void handleOtaUpload() {
   if (upload.status == UPLOAD_FILE_START) {
     otaSucceeded = false;
     otaInProgress = true;
-    playbackWasEnabledBeforeOta = playbackEnabled;
+    playbackWasEnabledBeforeOta =
+        airPlayOwnsAudio() ? resumeRadioAfterAirPlay : playbackEnabled;
     statusLedError = false;
     otaError = "";
     // Pausing the decoder here avoids audio/OTA contention; it does not
@@ -4555,7 +5005,8 @@ void handleOtaUpload() {
     stationChangePending = false;
     playbackAwaitingReady = false;
     playbackFaultPending = false;
-    audio.stopSong();
+    stopAirPlayService(false);
+    destroyRadioAudio();
     playerRequested = false;
     addLog("ota", "firmware upload started");
     updateStatusLed(true);
@@ -4596,14 +5047,16 @@ void handleResourceOtaUpload() {
   if (upload.status == UPLOAD_FILE_START) {
     otaSucceeded = false;
     otaInProgress = true;
-    playbackWasEnabledBeforeOta = playbackEnabled;
+    playbackWasEnabledBeforeOta =
+        airPlayOwnsAudio() ? resumeRadioAfterAirPlay : playbackEnabled;
     statusLedError = false;
     otaError = "";
     playbackEnabled = false;
     stationChangePending = false;
     playbackAwaitingReady = false;
     playbackFaultPending = false;
-    audio.stopSong();
+    stopAirPlayService(false);
+    destroyRadioAudio();
     playerRequested = false;
     addLog("ota", "LittleFS resource upload started");
     updateStatusLed(true);
@@ -4664,7 +5117,7 @@ constexpr char kUserHtmlV301[] PROGMEM = R"HTML(
 </style>
 <script>
 const q=s=>document.querySelector(s),textureStyles={none:['none','auto'],dots:['radial-gradient(#ffffff24 1px,transparent 1px)','18px 18px'],grid:['linear-gradient(#ffffff16 1px,transparent 1px),linear-gradient(90deg,#ffffff16 1px,transparent 1px)','24px 24px'],diagonal:['repeating-linear-gradient(135deg,#ffffff0d 0 2px,transparent 2px 12px)','auto'],cloud:['radial-gradient(circle at 12px 14px,transparent 9px,#ffffff1f 10px 11px,transparent 12px),radial-gradient(circle at 28px 14px,transparent 9px,#ffffff1f 10px 11px,transparent 12px)','40px 28px'],lattice:['linear-gradient(45deg,#ffffff14 12.5%,transparent 12.5% 37.5%,#ffffff14 37.5% 62.5%,transparent 62.5% 87.5%,#ffffff14 87.5%)','32px 32px'],waves:['radial-gradient(ellipse at 50% 100%,transparent 11px,#ffffff1c 12px 13px,transparent 14px)','34px 18px'],bamboo:['repeating-linear-gradient(90deg,transparent 0 30px,#ffffff16 31px 33px,transparent 34px 62px),repeating-linear-gradient(0deg,transparent 0 54px,#ffffff0d 55px 57px,transparent 58px 86px)','64px 88px'],ricepaper:['linear-gradient(25deg,#ffffff0a 1px,transparent 1px),linear-gradient(115deg,#ffffff08 1px,transparent 1px)','37px 53px,41px 47px'],porcelain:['radial-gradient(circle at 0 0,transparent 15px,#ffffff20 16px 17px,transparent 18px),radial-gradient(circle at 100% 100%,transparent 15px,#ffffff20 16px 17px,transparent 18px)','40px 40px']};
-let stations=[],favorites=[],selected=-1,playerState='stopped',playlistRevision=0,refreshBusy=false,refreshTimer,volumeTimer,deviceEpoch=0,deviceEpochSetAt=0,apiRequests=0,favoriteBusy=false,favoriteRevision=0,playerPageActive=true;
+let stations=[],favorites=[],selected=-1,playerState='stopped',playerSource='radio',airplayState='idle',playlistRevision=0,refreshBusy=false,refreshTimer,volumeTimer,deviceEpoch=0,deviceEpochSetAt=0,apiRequests=0,favoriteBusy=false,favoriteRevision=0,playerPageActive=true;
 async function api(url,options={},timeoutMs=10000){
   const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),timeoutMs);
   ++apiRequests;
@@ -4758,7 +5211,7 @@ function setImage(image,fallback,station,lazy=false){
   }
 }
 function updateRows(){document.querySelectorAll('[data-station-id]').forEach(row=>{const active=Number(row.dataset.stationId)===selected;row.classList.toggle('active',active);const hint=row.querySelector('.station-current');if(hint)hint.hidden=!active})}
-function renderNow(){const station=stations.find(s=>s.id===selected)||{name:'网络收音机',logo:''};q('#stationName').textContent=station.name;q('#play').textContent=playerState==='playing'?'Ⅱ':'▶';q('#state').textContent=({playing:'正在播放',buffering_or_reconnecting:'正在缓冲',stopped:'已暂停'})[playerState]||'正在恢复连接';q('#progress').classList.toggle('busy',playerState!=='playing'&&playerState!=='stopped');setImage(q('#cover'),q('#coverFallback'),station);updateRows()}
+function renderNow(){const station=stations.find(s=>s.id===selected)||{name:'网络收音机',logo:''},airplay=playerSource==='airplay';q('#stationName').textContent=airplay?'AirPlay':station.name;q('#play').textContent=playerState==='playing'?'Ⅱ':'▶';q('#state').textContent=airplay?({connected:'AirPlay 已连接',buffering:'AirPlay 正在缓冲',playing:'AirPlay 正在播放',paused:'AirPlay 已暂停'})[airplayState]||'AirPlay 已连接':({playing:'正在播放',buffering_or_reconnecting:'正在缓冲',stopped:'已暂停'})[playerState]||'正在恢复连接';q('#progress').classList.toggle('busy',airplay?(airplayState==='connected'||airplayState==='buffering'):(playerState!=='playing'&&playerState!=='stopped'));['#previous','#play','#next','#volume','#sleepTimer'].forEach(id=>q(id).disabled=airplay);document.querySelectorAll('.station-select').forEach(button=>button.disabled=airplay);setImage(q('#cover'),q('#coverFallback'),station);updateRows()}
 function updateFavoriteButtons(){
   document.querySelectorAll('[data-favorite-id]').forEach(button=>{
     const id=Number(button.dataset.favoriteId),active=favorites.includes(id);
@@ -4772,7 +5225,7 @@ function updateFavoriteButtons(){
 function stationButton(station,inFavorites=false){
   const row=document.createElement('div'),select=document.createElement('button'),heart=document.createElement('button'),img=document.createElement('img'),fallback=document.createElement('span'),text=document.createElement('span'),name=document.createElement('b');
   row.className='station';row.dataset.stationId=station.id;
-  select.type='button';select.className='station-select';
+  select.type='button';select.className='station-select';select.disabled=playerSource==='airplay';
   select.addEventListener('click',()=>selectStation(station.id,inFavorites));
   img.decoding='async';fallback.className='fallback';name.textContent=station.name;text.append(name);
   const hint=document.createElement('small');hint.className='station-current';hint.textContent='当前电台';hint.hidden=station.id!==selected;text.append(hint);
@@ -4823,10 +5276,10 @@ async function toggleFavorite(id){
   }
 }
 function renderStations(){const host=q('#stations');logoObserver.disconnect();for(const job of logoQueue){if(job.image.id!=='cover')logoQueue.delete(job)}host.replaceChildren();q('#count').textContent=stations.length+' 个电台';if(!stations.length){const e=document.createElement('div');e.className='notice';e.textContent='暂无电台，请到管理页面添加';host.append(e);return}const favoriteHeading=document.createElement('div'),favoriteHost=document.createElement('div');favoriteHeading.className='station-group';favoriteHeading.id='favoriteHeading';favoriteHost.id='favoriteStations';host.append(favoriteHeading,favoriteHost);renderFavoriteStations(false);let group='';stations.forEach(station=>{if(station.group!==group){group=station.group;const heading=document.createElement('div');heading.className='station-group';heading.textContent=group;host.append(heading)}host.append(stationButton(station))});updateRows();updateFavoriteButtons()}
-function applyPlayer(data){playerState=data.state||playerState;if(Number.isInteger(data.selected_station))selected=data.selected_station;if(Number.isInteger(data.volume))q('#volume').value=data.volume;if(Number.isInteger(data.sleep_timer_minutes)){q('#sleepTimer').value=String(data.sleep_timer_minutes);q('#sleepTimer').title=data.sleep_timer_minutes&&Number.isInteger(data.sleep_timer_remaining_seconds)?'剩余约 '+Math.ceil(data.sleep_timer_remaining_seconds/60)+' 分钟':''}applyDeviceTime(data);renderNow()}
+function applyPlayer(data){playerState=data.state||playerState;playerSource=data.source||playerSource;airplayState=data.airplay&&data.airplay.state||airplayState;if(Number.isInteger(data.selected_station))selected=data.selected_station;if(Number.isInteger(data.volume))q('#volume').value=data.volume;if(Number.isInteger(data.sleep_timer_minutes)){q('#sleepTimer').value=String(data.sleep_timer_minutes);q('#sleepTimer').title=data.sleep_timer_minutes&&Number.isInteger(data.sleep_timer_remaining_seconds)?'剩余约 '+Math.ceil(data.sleep_timer_remaining_seconds/60)+' 分钟':''}applyDeviceTime(data);renderNow()}
 async function loadStations(){const data=await api('/api/user/stations',{},30000),next=Array.isArray(data.stations)?data.stations:[],changed=JSON.stringify(next)!==JSON.stringify(stations);stations=next;applyFavorites(data);selected=data.selected;playlistRevision=data.revision||0;if(changed)renderStations();else renderFavoriteStations();renderNow()}
 async function command(url){try{applyPlayer(await api(url,{method:'POST'}))}catch(e){q('#state').textContent=e.message;alert(e.message)}}
-function selectStation(id,inFavorites=false){selected=id;playerState='buffering_or_reconnecting';renderNow();command('/api/user/stations/select?id='+encodeURIComponent(id)+(inFavorites?'&context=favorites':''))}
+function selectStation(id,inFavorites=false){if(playerSource==='airplay')return;selected=id;playerState='buffering_or_reconnecting';renderNow();command('/api/user/stations/select?id='+encodeURIComponent(id)+(inFavorites?'&context=favorites':''))}
 function scheduleRefresh(){clearTimeout(refreshTimer);if(playerPageActive)refreshTimer=setTimeout(refresh,document.hidden?30000:5000)}
 async function refresh(){clearTimeout(refreshTimer);if(!playerPageActive||refreshBusy)return;refreshBusy=true;try{const data=await api('/api/user/player/status');applyPlayer(data);if(data.playlist_revision!==playlistRevision)await loadStations()}catch(e){q('#state').textContent='设备连接失败：'+e.message}finally{refreshBusy=false;scheduleRefresh()}}
 window.addEventListener('pagehide',()=>{playerPageActive=false;clearTimeout(refreshTimer)});
@@ -4837,7 +5290,7 @@ document.addEventListener('visibilitychange',()=>{if(document.hidden){scheduleRe
 )HTML";
 
 constexpr char kAdminHtmlV302[] PROGMEM =
-R"HTML(<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>网络收音机 4.9.2 管理</title><style>
+R"HTML(<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>网络收音机 5.0.0 管理</title><style>
 :root{color-scheme:dark}body{max-width:880px;margin:24px auto;padding:0 16px;background:#101827;color:#e5e7eb;font:16px system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif}section,pre,.station,.wifi-network{background:#172234;padding:14px;border-radius:10px;margin:14px 0}button,input,select{box-sizing:border-box;padding:9px;margin:4px;border:0;border-radius:6px}input,select{width:100%}button{background:#38bdf8;color:#062032;font-weight:700;cursor:pointer}button:disabled{opacity:.38;cursor:not-allowed}.warn{background:#fbbf24}.danger{background:#fb7185}.playlist-head,.station-group{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}.playlist-head h2,.station-group strong{margin:0}.station-group{margin:24px 2px 8px;padding:10px 12px;border:1px solid #263b55;border-radius:9px;color:#67e8f9;font-size:18px;font-weight:800}.group-actions{display:flex;flex-wrap:wrap;gap:3px}.group-actions button{min-width:auto;margin:0;padding:7px 10px;font-size:13px}.station{content-visibility:auto;contain-intrinsic-size:170px}.station img,.station .fallback{display:inline-grid;width:48px;height:48px;object-fit:contain;object-position:center;background:#fff;border-radius:8px;vertical-align:middle;margin-right:10px}.station .fallback{place-items:center;background:#e89c27;color:#fff;font-weight:700}.station small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#b7c6da}.actions{display:block}.station button{min-width:82px;padding:11px 17px}.wifi-network{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px}.wifi-network b{overflow:hidden;text-overflow:ellipsis}.wifi-network button{width:auto;margin:0}.active{outline:2px solid #38bdf8}.state{font-size:1.1em;color:#67e8f9;margin-bottom:24px}.transport{display:flex;align-items:center;justify-content:center;gap:clamp(28px,8vw,72px);margin:18px 0 28px}.transport button{display:grid;place-items:center;margin:0}.skip{width:76px;height:64px;border-radius:18px;font-size:25px;background:#263449;color:#dce6f5}.play{width:92px;height:92px;border-radius:50%;font-size:36px;background:#f8fafc;color:#172234;box-shadow:0 10px 28px #0005}.volume-head{display:flex;justify-content:space-between;align-items:center;margin:0 6px 8px;color:#cbd5e1}.volume-head b{color:#fff;font-size:1.15em}.volume{width:calc(100% - 10px);accent-color:#38bdf8}.theme-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.theme-grid label{display:grid;gap:6px}.theme-grid input,.theme-grid select{margin:0}.theme-grid input[type=color]{height:54px;padding:4px;border:1px solid #ffffff26;border-radius:10px;background:#fff;color-scheme:light;cursor:pointer}.theme-grid input[type=color]::-webkit-color-swatch-wrapper{padding:0}.theme-grid input[type=color]::-webkit-color-swatch{border:0;border-radius:6px}.theme-grid input[type=color]::-moz-color-swatch{border:0;border-radius:6px}pre{overflow:auto;white-space:pre-wrap}a{color:#67e8f9}@media(max-width:560px){.theme-grid{grid-template-columns:1fr}.playlist-head{align-items:flex-start}.station{overflow-x:auto;white-space:nowrap;contain-intrinsic-size:190px}.station small{white-space:normal}.station button{min-width:auto;padding:9px 11px;margin:3px 2px}.group-actions{width:100%}.group-actions button{flex:1}}</style></head>
 <body><h1>ESP32-S3 网络收音机</h1><p>版本号：)HTML"
 NETWORK_RADIO_VERSION
@@ -4852,17 +5305,17 @@ R"HTML(　<a href="/">返回播放器</a></p>
 <section><h2>串口日志</h2><p>开关会立即生效并保存；关闭只停止串口输出，诊断日志仍会保留。</p><div id="serialLogs" style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px"><label style="display:flex;align-items:center;gap:8px"><input id="logSystem" type="checkbox" style="width:auto">系统 / 存储</label><label style="display:flex;align-items:center;gap:8px"><input id="logWifi" type="checkbox" style="width:auto">Wi-Fi</label><label style="display:flex;align-items:center;gap:8px"><input id="logAudio" type="checkbox" style="width:auto">音频 / 播放恢复</label><label style="display:flex;align-items:center;gap:8px"><input id="logTouch" type="checkbox" style="width:auto">触摸按键</label></div><small id="serialLogState">正在读取…</small></section>
 <section><h2>维护与安全</h2><button id="chooseFirmware">选择固件并升级</button><input id="firmware" type="file" accept=".bin" hidden><button id="chooseResources" class="warn">选择资源镜像并升级</button><input id="resources" type="file" accept=".bin" hidden><p><small>资源升级请选择构建目录中的 <code>littlefs.bin</code>。它会更新台标、开机提示音等 LittleFS 文件，不会清除 Wi-Fi、电台或管理密码。</small></p><button id="downloadLog">下载诊断日志</button><input id="adminPassword" type="password" placeholder="设置管理密码（8–63 位，用户名 admin）"><button id="savePassword">保存管理密码</button><button id="factoryReset" class="danger">恢复出厂设置</button><p>配网热点密码独立：<code>radio-setup</code></p></section><pre id="status">读取中…</pre>
 <script>
-const q=s=>document.querySelector(s),enc=o=>new URLSearchParams(o);let stations=[],groups=[],favorites=[],selected=-1,playerState='stopped',playlistRevision=0,pollBusy=false,volumeTimer,pollCount=0;
+const q=s=>document.querySelector(s),enc=o=>new URLSearchParams(o);let stations=[],groups=[],favorites=[],selected=-1,playerState='stopped',playerSource='radio',airplayState='idle',playlistRevision=0,pollBusy=false,volumeTimer,pollCount=0;
 async function api(url,options){const r=await fetch(url,options);const t=await r.text();let d={};try{d=t?JSON.parse(t):{}}catch(_){d={error:t||'请求失败'}}if(!r.ok)throw Error(d.error||'请求失败');return d}
 function safeLogo(name){return typeof name==='string'&&/^[A-Za-z0-9._-]+$/.test(name)?'/logos/'+encodeURIComponent(name):''}
-function button(label,handler,style,disabled=false){const b=document.createElement('button');b.textContent=label;if(style)b.className=style;b.disabled=disabled;b.addEventListener('click',handler);return b}
+function button(label,handler,style,disabled=false){const b=document.createElement('button');b.textContent=label;if(style)b.className=style;b.disabled=disabled||(label==='播放此台'&&playerSource==='airplay');b.addEventListener('click',handler);return b}
 function stationImage(station){const image=document.createElement('img'),fallback=document.createElement('span'),url=safeLogo(station.logo);image.loading='lazy';image.decoding='async';fallback.className='fallback';fallback.textContent=(station.name||'R').trim().slice(0,1).toUpperCase()||'R';if(!url){image.style.display='none'}else{fallback.style.display='none';image.onerror=()=>{image.style.display='none';fallback.style.display='grid'};image.src=url}return [image,fallback]}
 function stationRow(station,inFavorites=false,favoritePosition=-1){const row=document.createElement('article'),title=document.createElement('b'),url=document.createElement('small'),actions=document.createElement('div'),[image,fallback]=stationImage(station),isFavorite=favorites.includes(station.id);row.className='station'+(station.id===selected?' active':'');row.dataset.stationId=String(station.id);title.textContent=station.name;url.textContent=station.url;actions.className='actions';if(inFavorites){actions.append(button('播放此台',()=>post('/api/stations/select?id='+station.id+'&context=favorites')),button('最前',()=>postFavorite('/api/favorites/move?id='+station.id+'&direction=first'),'',favoritePosition===0),button('↑',()=>postFavorite('/api/favorites/move?id='+station.id+'&direction=up'),'',favoritePosition===0),button('↓',()=>postFavorite('/api/favorites/move?id='+station.id+'&direction=down'),'',favoritePosition===favorites.length-1),button('最后',()=>postFavorite('/api/favorites/move?id='+station.id+'&direction=last'),'',favoritePosition===favorites.length-1),button('取消收藏',()=>postFavorite('/api/favorites?id='+station.id+'&action=remove'),'warn'))}else{actions.append(button('播放此台',()=>post('/api/stations/select?id='+station.id)),button(isFavorite?'取消收藏':'加入收藏',()=>postFavorite('/api/favorites?id='+station.id+'&action='+(isFavorite?'remove':'add')),isFavorite?'warn':''),button('编辑',()=>editStation(station.id)),button('组内最前',()=>post('/api/stations/move?id='+station.id+'&direction=first')),button('↑',()=>post('/api/stations/move?id='+station.id+'&direction=up')),button('↓',()=>post('/api/stations/move?id='+station.id+'&direction=down')),button('组内最后',()=>post('/api/stations/move?id='+station.id+'&direction=last')),button('删除',()=>removeStation(station.id),'warn'))}row.append(image,fallback,title,url,actions);return row}
 function renderStations(){const host=q('#stations');host.replaceChildren(),favoriteMeta=groups.find(g=>g.id===255)||{id:255,name:'收藏',count:favorites.length},favoriteHeading=document.createElement('div'),favoriteLabel=document.createElement('strong');favoriteHeading.className='station-group';favoriteLabel.textContent=favoriteMeta.name+'（'+favorites.length+'）';favoriteHeading.append(favoriteLabel);host.append(favoriteHeading);favorites.map(id=>stations.find(s=>s.id===id)).filter(Boolean).forEach((station,index)=>host.append(stationRow(station,true,index)));const visible=(groups.length?groups:Array.from(new Map(stations.map(s=>[s.group_id,{id:s.group_id,name:s.group,count:stations.filter(x=>x.group_id===s.group_id).length}])).values())).filter(g=>g.id!==255),positions=new Map(visible.map((g,i)=>[g.id,i]));let groupId=null;stations.forEach(station=>{if(station.group_id!==groupId){groupId=station.group_id;const meta=visible.find(g=>g.id===groupId)||{id:groupId,name:station.group,count:0},position=positions.get(groupId)||0,heading=document.createElement('div'),label=document.createElement('strong'),controls=document.createElement('div');heading.className='station-group';label.textContent=meta.name+'（'+meta.count+'）';controls.className='group-actions';controls.append(button('最前',()=>postGroup('/api/station-groups/move?id='+meta.id+'&direction=first'),'',position===0),button('上移',()=>postGroup('/api/station-groups/move?id='+meta.id+'&direction=up'),'',position===0),button('下移',()=>postGroup('/api/station-groups/move?id='+meta.id+'&direction=down'),'',position===visible.length-1),button('最后',()=>postGroup('/api/station-groups/move?id='+meta.id+'&direction=last'),'',position===visible.length-1));heading.append(label,controls);host.append(heading)}host.append(stationRow(station))});if(!stations.length){const p=document.createElement('p');p.textContent='暂无电台';host.append(p)}}
 function applyPlaylist(data){if(!Array.isArray(data.stations))return;stations=data.stations;groups=Array.isArray(data.groups)?data.groups:[];favorites=Array.isArray(data.favorites)?data.favorites:[];selected=data.selected;playlistRevision=data.revision||playlistRevision;renderStations()}
-function applyPlayer(data){playerState=data.state||playerState;if(Number.isInteger(data.selected_station))selected=data.selected_station;if(Number.isInteger(data.volume)){q('#volume').value=data.volume;q('#volumeText').textContent=data.volume}const current=stations.find(s=>s.id===selected);q('#now').textContent=(data.state||'stopped')+' · '+(current?current.name:'网络收音机')+(data.message?' · '+data.message:'');q('#play').textContent=playerState==='playing'?'Ⅱ':'▶';document.querySelectorAll('.station').forEach(row=>row.classList.toggle('active',Number(row.dataset.stationId)===selected))}
+function applyPlayer(data){playerState=data.state||playerState;playerSource=data.source||playerSource;airplayState=data.airplay&&data.airplay.state||airplayState;if(Number.isInteger(data.selected_station))selected=data.selected_station;if(Number.isInteger(data.volume)){q('#volume').value=data.volume;q('#volumeText').textContent=data.volume}const current=stations.find(s=>s.id===selected),airplay=playerSource==='airplay',airplayText=({connected:'AirPlay 已连接',buffering:'AirPlay 正在缓冲',playing:'AirPlay 正在播放',paused:'AirPlay 已暂停'})[airplayState]||'AirPlay';q('#now').textContent=airplay?airplayText:(data.state||'stopped')+' · '+(current?current.name:'网络收音机')+(data.message?' · '+data.message:'');q('#play').textContent=playerState==='playing'?'Ⅱ':'▶';['#previous','#play','#next','#volume'].forEach(id=>q(id).disabled=airplay);document.querySelectorAll('.station button').forEach(button=>{if(button.textContent==='播放此台')button.disabled=airplay});document.querySelectorAll('.station').forEach(row=>row.classList.toggle('active',Number(row.dataset.stationId)===selected))}
 async function loadPlaylist(){applyPlaylist(await api('/api/stations'))}
-async function refreshPlayer(reloadPlaylist=true){const data=await api('/api/player/status');applyPlayer(data);if(reloadPlaylist&&data.playlist_revision!==playlistRevision)await loadPlaylist()}
+async function refreshPlayer(reloadPlaylist=true){const data=await api('/api/player/status');applyPlayer(data);if(reloadPlaylist&&data.playlist_revision!==playlistRevision){await loadPlaylist();applyPlayer({})}}
 async function refreshStatus(){const data=await api('/api/status');q('#status').textContent=JSON.stringify(data,null,2)}
 async function poll(){if(pollBusy)return;pollBusy=true;try{await refreshPlayer();if(++pollCount%6===0)await refreshStatus()}catch(e){q('#status').textContent='错误：'+e.message}finally{pollBusy=false;setTimeout(poll,document.hidden?30000:5000)}}
 async function post(url){try{const data=await api(url,{method:'POST'});applyPlaylist(data);applyPlayer(data)}catch(e){alert(e.message)}}
@@ -4997,9 +5450,7 @@ void setup() {
   loadLedSettings();
   playerPreferences.begin("player", true); playerVolume = playerPreferences.getUChar("volume", playerVolume); playerPreferences.end();
   Audio::audio_info_callback = audioInfoV8;
-  audio.settings.BUFFER_TRESHOLD_HLS = 32 * 1024;
-  // Initialise I2S exactly once and reuse the same Audio instance for the
-  // startup chime and the subsequent network stream.
+  configureAirPlayIdentity();
   initialiseAudioOutput();
   playBootChime();
   audioOutputPeak = 0;
@@ -5021,8 +5472,11 @@ void loop() {
   printTouchDebugIfDue();
   maintainNetworkTime();
   maintainSleepTimer();
+  maintainAirPlay();
   maintainNetworkAndPlayback();
-  audio.loop();
+  if (audioSource.load() == AudioSource::Radio && radioAudio != nullptr) {
+    radioAudio->loop();
+  }
   updateStatusLed();
 }
 #endif  // NETWORK_RADIO_V8_NO_ENTRYPOINT

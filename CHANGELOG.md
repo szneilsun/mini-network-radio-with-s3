@@ -6,6 +6,30 @@
 
 暂无。
 
+## 5.0.0 - 2026-10-12
+
+### 新增
+
+- 集成 `jptrsn/esp-airsync v0.2.4` 的 AirPlay 1 / RAOP 接收组件；设备连接路由器 Wi-Fi 后持续以 `Network Radio-XXXX` 发布。
+- AirPlay 连接后立即暂停网络电台并独占 GPIO4/5/6 的 I²S；断开后仅在连接前电台正在播放时恢复原电台。
+- 播放器和管理 API 增加 `source` 与 `airplay.state`，管理状态同时提供 AirPlay 设备名及可用状态；网页显示 AirPlay 连接、缓冲、播放和暂停状态。
+
+### 改进
+
+- 网络电台播放器改为可创建和销毁的对象，让 AirPlay 与电台安全切换同一组 I²S 引脚。
+- AirPlay 会话期间网页和触摸电台控制不会夺回 I²S；相关播放、切台、音量和睡眠定时请求返回 `409`。
+- AirPlay 使用发送端音量，不修改保存的电台音量；Wi-Fi 重连会重新发布 RAOP，OTA 失败会恢复服务和原电台状态。
+
+### 兼容性
+
+- 仅支持 AirPlay 1 音频，不支持 AirPlay 2 配对、视频、密码、封面或多房间同步保证。
+- 保持 Arduino Core 3.3.11、MAX98357A GPIO4/5/6 接线、NVS 键和 Flash 分区不变。
+- 项目及分发固件改用 GPLv3；固定版本的 RAOP/ALAC 组件和第三方来源信息随源码提供。
+
+### 升级说明
+
+- 从 4.x 升级只需 OTA 上传应用固件，不需要更新 `littlefs.bin`；AirPlay 缓冲依赖目标 ESP32-S3 N16R8 的 PSRAM。
+
 ## 4.9.2 - 2026-10-09
 
 ### 新增

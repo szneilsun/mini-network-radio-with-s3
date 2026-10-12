@@ -12,6 +12,7 @@ build_path=${ESP32_BUILD_PATH:-"${project_root}/build/${project_name%.ino}"}
 audio_library_source=${ESP32_AUDIO_I2S_DIR:-"${HOME}/Documents/Arduino/libraries/ESP32-audioI2S-master"}
 audio_library_build="${project_root}/build/patched-libraries/ESP32-audioI2S"
 audio_library_patch="${project_root}/tools/patches/esp32-audioi2s-hls-refresh.patch"
+raop_library="${project_root}/sources/esp32-network-radio/libraries/esp-raop-receiver"
 upload_requested=false
 upload_port=
 compile_args=()
@@ -60,6 +61,11 @@ done
   echo "Audio-library patch not found: ${audio_library_patch}" >&2
   exit 66
 }
+[[ -f "${raop_library}/src/esp_raop_receiver.h" &&
+   -f "${raop_library}/src/esp32s3/libalac.a" ]] || {
+  echo "Project-local RAOP receiver library is incomplete: ${raop_library}" >&2
+  exit 66
+}
 
 # Arduino's bundled ctags for this core can be x86-only on Apple Silicon.
 # Prefer an installed Universal Ctags when it is available, while leaving
@@ -74,7 +80,7 @@ mkdir -p "$(dirname "$audio_library_build")"
 cp -R "$audio_library_source" "$audio_library_build"
 patch --batch --forward --silent -d "$audio_library_build" -p1 < "$audio_library_patch"
 
-library_args=(--library "$audio_library_build")
+library_args=(--library "$audio_library_build" --library "$raop_library")
 
 merge_recipe='recipe.hooks.objcopy.postobjcopy.3.pattern_args=--chip {build.mcu} merge-bin -o "{build.path}/{build.project_name}.merged.bin" --pad-to-size {build.flash_size} --flash-mode keep --flash-freq keep --flash-size keep {build.bootloader_addr} "{build.path}/{build.project_name}.bootloader.bin" 0x8000 "{build.path}/{build.project_name}.partitions.bin" 0x19000 "{runtime.platform.path}/tools/partitions/boot_app0.bin" 0x20000 "{build.path}/{build.project_name}.bin"'
 flash_args_recipe="recipe.hooks.objcopy.postobjcopy.4.pattern=\"${project_root}/tools/write-flash-args.sh\" \"{build.path}\" \"{build.project_name}\" \"{build.bootloader_addr}\" \"{build.flash_mode}\" \"{build.img_freq}\" \"{build.flash_size}\""
