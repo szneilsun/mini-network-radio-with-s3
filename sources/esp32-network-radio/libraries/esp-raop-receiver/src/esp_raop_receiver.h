@@ -15,6 +15,18 @@ extern "C" {
  */
 typedef struct raop_handle_s raop_handle_t;
 
+typedef struct {
+    uint32_t rtp_packets_received;
+    uint32_t alac_frames_decoded;
+    uint32_t alac_decode_errors;
+    uint32_t pcm_frames_queued;
+    uint32_t pcm_frames_dropped;
+    uint32_t rtp_packets_late;
+    uint32_t rtp_frames_discarded;
+    uint32_t rtp_silence_frames;
+    uint32_t pcm_queue_depth;
+} raop_audio_stats_t;
+
 /**
  * @brief Volume control mode
  */
@@ -180,6 +192,8 @@ esp_err_t raop_init(const raop_config_t *config, raop_handle_t **out_handle);
  * @brief Deinitialize RAOP receiver
  */
 esp_err_t raop_deinit(raop_handle_t *handle);
+esp_err_t raop_get_audio_stats(raop_handle_t *handle,
+                               raop_audio_stats_t *stats);
 
 /**
  * @brief Get current device name

@@ -23,6 +23,15 @@ typedef bool (*raop_cmd_cb_t)(raop_internal_event_t event, ...);
 typedef bool (*raop_cmd_vcb_t)(raop_internal_event_t event, va_list args);
 typedef void (*raop_data_cb_t)(const uint8_t *data, size_t len, uint32_t playtime);
 
+void raop_stats_rtp_packet_received(void);
+void raop_stats_alac_frame_decoded(void);
+void raop_stats_alac_decode_error(void);
+void raop_stats_pcm_frame_queued(void);
+void raop_stats_pcm_frame_dropped(void);
+void raop_stats_rtp_packet_late(void);
+void raop_stats_rtp_frame_discarded(void);
+void raop_stats_rtp_silence_frame(void);
+
 /**
  * @brief     init sink mode (need to be provided)
  */

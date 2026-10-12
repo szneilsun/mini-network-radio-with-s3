@@ -414,9 +414,11 @@ static int seq_order(seq_t a, seq_t b) {
 }
 
 /*---------------------------------------------------------------------------*/
-static void alac_decode(rtp_t *ctx, s16_t *dest, char *buf, int len, u16_t *outsize) {
+static bool alac_decode(rtp_t *ctx, s16_t *dest, char *buf, int len, u16_t *outsize) {
 	unsigned char iv[16];
 	int aeslen;
+	unsigned int out_frames = 0;
+	bool decoded;
 	assert(len<=MAX_PACKET);
 
 	if (ctx->decrypt) {
@@ -428,12 +430,19 @@ static void alac_decode(rtp_t *ctx, s16_t *dest, char *buf, int len, u16_t *outs
 		mbedtls_aes_crypt_cbc(&ctx->aes, MBEDTLS_AES_DECRYPT, aeslen, iv, (unsigned char*) buf, ctx->decrypt_buf);
 #endif
 		memcpy(ctx->decrypt_buf+aeslen, buf+aeslen, len-aeslen);
-		alac_to_pcm(ctx->alac_codec, (unsigned char*) ctx->decrypt_buf, (unsigned char*) dest, 2, (unsigned int*) outsize);
+		decoded = alac_to_pcm(ctx->alac_codec, (unsigned char*) ctx->decrypt_buf, (unsigned char*) dest, 2, &out_frames);
 	} else {
-		alac_to_pcm(ctx->alac_codec, (unsigned char*) buf, (unsigned char*) dest, 2, (unsigned int*) outsize);
+		decoded = alac_to_pcm(ctx->alac_codec, (unsigned char*) buf, (unsigned char*) dest, 2, &out_frames);
 	}
 
-	*outsize *= 4;
+	if (!decoded || out_frames == 0 || out_frames > ctx->frame_size ||
+		out_frames > UINT16_MAX / 4) {
+		*outsize = 0;
+		return false;
+	}
+
+	*outsize = (u16_t)(out_frames * 4);
+	return true;
 }
 
 
@@ -518,6 +527,7 @@ static void buffer_put_packet(rtp_t *ctx, seq_t seqno, unsigned rtptime, bool fi
 		LOG_DEBUG("[%p]: packet recovered seqno:%hu rtptime:%u (W:%hu R:%hu)", ctx, seqno, rtptime, ctx->ab_write, ctx->ab_read);
 	} else {
         // too late
+		raop_stats_rtp_packet_late();
 		if (abuf->missed) LOG_INFO("[%p]: packet too late seqno:%hu rtptime:%u (W:%hu R:%hu)", ctx, seqno, rtptime, ctx->ab_write, ctx->ab_read);
         abuf = NULL;
 	}
@@ -529,13 +539,20 @@ static void buffer_put_packet(rtp_t *ctx, seq_t seqno, unsigned rtptime, bool fi
 
 	u16_t out_len = 0;
 	if (abuf) {
-		alac_decode(ctx, abuf->data, data, len, &out_len);
-		abuf->len = out_len;
-		abuf->ready = 1;
-        abuf->missed = 0;
-		// this is the local rtptime when this frame is expected to play
-		abuf->rtptime = rtptime;
-		buffer_push_packet(ctx);
+		if (alac_decode(ctx, abuf->data, data, len, &out_len)) {
+			raop_stats_alac_frame_decoded();
+			abuf->len = out_len;
+			abuf->ready = 1;
+			abuf->missed = 0;
+			// this is the local rtptime when this frame is expected to play
+			abuf->rtptime = rtptime;
+			buffer_push_packet(ctx);
+		} else {
+			raop_stats_alac_decode_error();
+			abuf->ready = 0;
+			abuf->missed = 1;
+			LOG_WARN("[%p]: failed to decode ALAC frame seqno:%hu", ctx, seqno);
+		}
 
 #ifdef __RTP_STORE
 		fwrite(data, len, 1, ctx->rtpIN);
@@ -567,6 +584,7 @@ static void buffer_push_packet(rtp_t *ctx) {
 		if (now > playtime) {
 			LOG_DEBUG("[%p]: discarded frame now:%u missed by:%d (W:%hu R:%hu)", ctx, now, now - playtime, ctx->ab_write, ctx->ab_read);
 			ctx->discarded++;
+			raop_stats_rtp_frame_discarded();
 			curframe->ready = 0;
 		} else if (playtime - now <= hold) {
 			if (curframe->ready) {
@@ -576,6 +594,7 @@ static void buffer_push_packet(rtp_t *ctx) {
 				LOG_DEBUG("[%p]: created zero frame (W:%hu R:%hu)", ctx, ctx->ab_write, ctx->ab_read);
 				ctx->data_cb(silence_frame, ctx->frame_size * 4, playtime);
 				ctx->silent_frames++;
+				raop_stats_rtp_silence_frame();
                 curframe->missed = 1;
 			}
 		} else if (curframe->ready) {
@@ -704,6 +723,7 @@ static void rtp_thread_func(void *arg) {
 					LOG_INFO("[%p]: 1st audio packet received", ctx);
 				}
 
+				raop_stats_rtp_packet_received();
 				buffer_put_packet(ctx, seqno, rtptime, packet[1] & 0x80, pktp, plen);
 
 				break;

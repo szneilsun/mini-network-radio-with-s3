@@ -30,3 +30,9 @@
          }
          if (!f_haveRedirection) {
              accomplish_m3u8_url();
+--- a/src/Audio.cpp
++++ b/src/Audio.cpp
+@@ -732,0 +733 @@ Audio::~Audio() {
++    stopAudioTask();
+@@ -738 +738,0 @@ Audio::~Audio() {
+-    stopAudioTask();

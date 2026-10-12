@@ -1,5 +1,5 @@
 /*
- * Network Radio 5.0.0 standalone Arduino sketch.
+ * Network Radio 5.0.5 standalone Arduino sketch.
  * Project-local source dependencies are inlined in this file.
  *
  * The superseded V4 test-tone/I2S path and unused legacy web pages have
@@ -9,7 +9,7 @@
 
 /* Network Radio 3.0: player UI, administration UI, and WS2812B status LED. */
 
-#define NETWORK_RADIO_VERSION "5.0.0"
+#define NETWORK_RADIO_VERSION "5.0.5"
 #define NETWORK_RADIO_MAX_STATIONS 512
 #ifdef NETWORK_RADIO_NO_ENTRYPOINT
 #define NETWORK_RADIO_V8_NO_ENTRYPOINT
@@ -32,6 +32,7 @@ void loop();
 #include <esp_mac.h>
 #include <esp_private/periph_ctrl.h>
 #include <esp32-hal-psram.h>
+#include <esp_timer.h>
 #include <esp_raop_receiver.h>
 #include <mdns.h>
 #include <atomic>
@@ -89,7 +90,7 @@ void audio_process_i2s(int32_t *outBuff, int16_t validSamples,
 
 namespace config {
 #ifndef NETWORK_RADIO_VERSION
-#define NETWORK_RADIO_VERSION "5.0.0"
+#define NETWORK_RADIO_VERSION "5.0.5"
 #endif
 constexpr char kFirmwareVersion[] = NETWORK_RADIO_VERSION;
 constexpr uint32_t kSerialBaud = 115200;
@@ -166,8 +167,10 @@ constexpr uint8_t kSerialLogSystemBit = 1U << 0;
 constexpr uint8_t kSerialLogWifiBit = 1U << 1;
 constexpr uint8_t kSerialLogAudioBit = 1U << 2;
 constexpr uint8_t kSerialLogTouchBit = 1U << 3;
+constexpr uint8_t kSerialLogAirPlayBit = 1U << 4;
 constexpr uint8_t kSerialLogAllBits = kSerialLogSystemBit | kSerialLogWifiBit |
-                                      kSerialLogAudioBit | kSerialLogTouchBit;
+                                      kSerialLogAudioBit | kSerialLogTouchBit |
+                                      kSerialLogAirPlayBit;
 uint8_t serialLogMask = kSerialLogSystemBit;
 bool touchDebugEnabled = false;
 
@@ -194,6 +197,9 @@ bool serialLogKindEnabled(const char *kind) {
     return serialLogEnabled(kSerialLogAudioBit);
   }
   if (strcmp(kind, "touch") == 0) return serialLogEnabled(kSerialLogTouchBit);
+  if (strcmp(kind, "airplay") == 0 || strcmp(kind, "raop") == 0) {
+    return serialLogEnabled(kSerialLogAirPlayBit);
+  }
   return serialLogEnabled(kSerialLogSystemBit);
 }
 Station *stations = nullptr;
@@ -1474,6 +1480,21 @@ std::atomic<AudioSource> audioSource{AudioSource::Radio};
 std::atomic<AirPlayState> airPlayState{AirPlayState::Idle};
 std::atomic<uint32_t> airPlayPendingEvents{0};
 std::atomic<bool> airPlaySessionConnected{false};
+std::atomic<uint32_t> airPlayPcmBlocks{0};
+std::atomic<uint32_t> airPlayPcmBytesWritten{0};
+std::atomic<uint32_t> airPlayPcmPeak{0};
+std::atomic<uint32_t> airPlayI2sWriteErrors{0};
+std::atomic<int32_t> airPlayLastI2sError{ESP_OK};
+std::atomic<uint32_t> airPlayOutputLateBlocks{0};
+std::atomic<uint32_t> airPlayOutputMaxLatenessUs{0};
+std::atomic<uint32_t> airPlayLastOutputBlockAtUs{0};
+uint32_t nextAirPlayTelemetryAt = 0;
+AirPlayState lastAirPlayLoggedState = AirPlayState::Idle;
+bool airPlayTelemetryHasSnapshot = false;
+raop_audio_stats_t lastAirPlayInputSnapshot = {};
+uint32_t lastAirPlayPcmBlocks = 0;
+uint32_t lastAirPlayPcmBytesWritten = 0;
+uint32_t lastAirPlayI2sWriteErrors = 0;
 raop_handle_t *airPlayHandle = nullptr;
 i2s_chan_handle_t airPlayI2sHandle = nullptr;
 bool airPlayAdvertised = false;
@@ -1520,12 +1541,93 @@ bool rejectRadioControlDuringAirPlay() {
   return true;
 }
 
+void addLog(const char *kind, const char *message);
+
+void resetAirPlayOutputStats() {
+  airPlayPcmBlocks.store(0);
+  airPlayPcmBytesWritten.store(0);
+  airPlayPcmPeak.store(0);
+  airPlayI2sWriteErrors.store(0);
+  airPlayLastI2sError.store(ESP_OK);
+  airPlayOutputLateBlocks.store(0);
+  airPlayOutputMaxLatenessUs.store(0);
+  airPlayLastOutputBlockAtUs.store(0);
+}
+
+void logAirPlayActivityIfDue() {
+  if (!airPlayOwnsAudio() || airPlayHandle == nullptr) return;
+
+  const uint32_t now = millis();
+  if (static_cast<int32_t>(now - nextAirPlayTelemetryAt) < 0) return;
+  nextAirPlayTelemetryAt = now + 10000;
+
+  raop_audio_stats_t current = {};
+  if (raop_get_audio_stats(airPlayHandle, &current) != ESP_OK) return;
+  const uint32_t pcmBlocks = airPlayPcmBlocks.load();
+  const uint32_t pcmBytes = airPlayPcmBytesWritten.load();
+  const uint32_t i2sWriteErrors = airPlayI2sWriteErrors.load();
+  if (!airPlayTelemetryHasSnapshot) {
+    lastAirPlayInputSnapshot = current;
+    lastAirPlayPcmBlocks = pcmBlocks;
+    lastAirPlayPcmBytesWritten = pcmBytes;
+    airPlayTelemetryHasSnapshot = true;
+    return;
+  }
+
+  char message[112] = {};
+  snprintf(message, sizeof(message),
+           "10s R+%u A+%u E+%u Q+%u D+%u L+%u X+%u S+%u C%u",
+           current.rtp_packets_received - lastAirPlayInputSnapshot.rtp_packets_received,
+           current.alac_frames_decoded - lastAirPlayInputSnapshot.alac_frames_decoded,
+           current.alac_decode_errors - lastAirPlayInputSnapshot.alac_decode_errors,
+           current.pcm_frames_queued - lastAirPlayInputSnapshot.pcm_frames_queued,
+           current.pcm_frames_dropped - lastAirPlayInputSnapshot.pcm_frames_dropped,
+           current.rtp_packets_late - lastAirPlayInputSnapshot.rtp_packets_late,
+           current.rtp_frames_discarded - lastAirPlayInputSnapshot.rtp_frames_discarded,
+           current.rtp_silence_frames - lastAirPlayInputSnapshot.rtp_silence_frames,
+           current.pcm_queue_depth);
+  addLog("airplay", message);
+
+  const uint32_t maxLatenessUs = airPlayOutputMaxLatenessUs.exchange(0);
+  snprintf(message, sizeof(message), "10s O+%u B+%u P%u I+%u G+%u M%ums",
+           pcmBlocks - lastAirPlayPcmBlocks,
+           pcmBytes - lastAirPlayPcmBytesWritten,
+           airPlayPcmPeak.exchange(0),
+           i2sWriteErrors - lastAirPlayI2sWriteErrors,
+           airPlayOutputLateBlocks.exchange(0),
+           maxLatenessUs / 1000U);
+  addLog("airplay", message);
+
+  lastAirPlayInputSnapshot = current;
+  lastAirPlayPcmBlocks = pcmBlocks;
+  lastAirPlayPcmBytesWritten = pcmBytes;
+  lastAirPlayI2sWriteErrors = i2sWriteErrors;
+}
+
 void airPlayAudioOutput(const uint8_t *data, size_t len, void *) {
   i2s_chan_handle_t handle = airPlayI2sHandle;
   if (!airPlayOwnsAudio() || handle == nullptr || data == nullptr || len == 0) {
     return;
   }
 
+  airPlayPcmBlocks.fetch_add(1);
+  const uint32_t nowUs = static_cast<uint32_t>(esp_timer_get_time());
+  const uint32_t previousBlockAtUs =
+      airPlayLastOutputBlockAtUs.exchange(nowUs);
+  const uint32_t expectedBlockUs =
+      static_cast<uint32_t>((len * 1000000ULL) / (4ULL * 44100ULL));
+  if (previousBlockAtUs != 0) {
+    const uint32_t elapsedUs = nowUs - previousBlockAtUs;
+    if (elapsedUs > expectedBlockUs + 2000U) {
+      const uint32_t latenessUs = elapsedUs - expectedBlockUs;
+      airPlayOutputLateBlocks.fetch_add(1);
+      uint32_t previousMax = airPlayOutputMaxLatenessUs.load();
+      while (latenessUs > previousMax &&
+             !airPlayOutputMaxLatenessUs.compare_exchange_weak(
+                 previousMax, latenessUs)) {
+      }
+    }
+  }
   const int16_t *samples = reinterpret_cast<const int16_t *>(data);
   const size_t sampleCount = len / sizeof(int16_t);
   uint32_t blockPeak = 0;
@@ -1535,6 +1637,10 @@ void airPlayAudioOutput(const uint8_t *data, size_t len, void *) {
         static_cast<uint32_t>(sample < 0 ? -sample : sample);
     if (magnitude > blockPeak) blockPeak = magnitude;
   }
+  uint32_t previousPeak = airPlayPcmPeak.load();
+  while (blockPeak > previousPeak &&
+         !airPlayPcmPeak.compare_exchange_weak(previousPeak, blockPeak)) {
+  }
   const uint32_t scaledPeak = blockPeak << 16;
   if (scaledPeak > audioOutputPeak) audioOutputPeak = scaledPeak;
 
@@ -1542,7 +1648,11 @@ void airPlayAudioOutput(const uint8_t *data, size_t len, void *) {
   const esp_err_t result =
       i2s_channel_write(handle, data, len, &bytesWritten, portMAX_DELAY);
   if (result != ESP_OK || bytesWritten != len) {
+    airPlayI2sWriteErrors.fetch_add(1);
+    airPlayLastI2sError.store(result == ESP_OK ? ESP_ERR_INVALID_SIZE : result);
     airPlayState.store(AirPlayState::Buffering);
+  } else {
+    airPlayPcmBytesWritten.fetch_add(bytesWritten);
   }
 }
 
@@ -3400,6 +3510,15 @@ void stopAirPlayService(bool restoreRadio) {
 void beginAirPlaySession() {
   if (airPlayOwnsAudio() || otaInProgress) return;
   resumeRadioAfterAirPlay = playbackEnabled;
+  resetAirPlayOutputStats();
+  airPlayTelemetryHasSnapshot =
+      airPlayHandle != nullptr &&
+      raop_get_audio_stats(airPlayHandle, &lastAirPlayInputSnapshot) == ESP_OK;
+  lastAirPlayPcmBlocks = airPlayPcmBlocks.load();
+  lastAirPlayPcmBytesWritten = airPlayPcmBytesWritten.load();
+  lastAirPlayI2sWriteErrors = airPlayI2sWriteErrors.load();
+  nextAirPlayTelemetryAt = millis() + 10000;
+  lastAirPlayLoggedState = AirPlayState::Connected;
   cancelSleepTimer();
   playbackEnabled = false;
   stationChangePending = false;
@@ -3432,6 +3551,22 @@ void maintainAirPlay() {
                airPlaySessionConnected.load()) {
       beginAirPlaySession();
     }
+  }
+
+  if (airPlayOwnsAudio()) {
+    const AirPlayState state = airPlayState.load();
+    if (state != lastAirPlayLoggedState) {
+      lastAirPlayLoggedState = state;
+      if (state != AirPlayState::Connected) {
+        char message[40] = {};
+        snprintf(message, sizeof(message), "state: %s", airPlayStateName());
+        addLog("airplay", message);
+      }
+    }
+    logAirPlayActivityIfDue();
+  } else {
+    lastAirPlayLoggedState = AirPlayState::Idle;
+    airPlayTelemetryHasSnapshot = false;
   }
 
   if (otaInProgress || otaSucceeded) return;
@@ -3471,6 +3606,8 @@ String serialLogSettingsJson() {
          String(serialLogEnabled(kSerialLogAudioBit) ? "true" : "false") +
          ",\"touch\":" +
          String(serialLogEnabled(kSerialLogTouchBit) ? "true" : "false") +
+         ",\"airplay\":" +
+         String(serialLogEnabled(kSerialLogAirPlayBit) ? "true" : "false") +
          "}";
 }
 
@@ -3487,6 +3624,7 @@ void handleSaveSerialLogSettings() {
   if (serialLogArgumentEnabled("wifi")) nextMask |= kSerialLogWifiBit;
   if (serialLogArgumentEnabled("audio")) nextMask |= kSerialLogAudioBit;
   if (serialLogArgumentEnabled("touch")) nextMask |= kSerialLogTouchBit;
+  if (serialLogArgumentEnabled("airplay")) nextMask |= kSerialLogAirPlayBit;
 
   Preferences logPreferences;
   if (!logPreferences.begin(config::kSerialLogNamespace, false)) {
@@ -3935,6 +4073,10 @@ void handleStatusV8() {
   if (!requireAdmin()) return;
   const bool connected = WiFi.status() == WL_CONNECTED;
   const char *state = playerStateForUi();
+  raop_audio_stats_t raopStats = {};
+  if (airPlayHandle != nullptr) {
+    raop_get_audio_stats(airPlayHandle, &raopStats);
+  }
   String json = "{\"firmware\":\"" + String(config::kFirmwareVersion) +
                 "\",\"network\":{\"station_connected\":" +
                 String(connected ? "true" : "false") + ",\"station_ip\":\"" +
@@ -3955,7 +4097,38 @@ void handleStatusV8() {
                 String(airPlayHandle != nullptr && airPlayAdvertised
                            ? "true"
                            : "false") +
-                "},\"time\":{\"synced\":" +
+                ",\"audio_input\":{\"rtp_packets\":" +
+                String(raopStats.rtp_packets_received) +
+                ",\"alac_frames\":" +
+                String(raopStats.alac_frames_decoded) +
+                ",\"alac_errors\":" +
+                String(raopStats.alac_decode_errors) +
+                ",\"pcm_frames_queued\":" +
+                String(raopStats.pcm_frames_queued) +
+                ",\"pcm_frames_dropped\":" +
+                String(raopStats.pcm_frames_dropped) +
+                ",\"rtp_packets_late\":" +
+                String(raopStats.rtp_packets_late) +
+                ",\"rtp_frames_discarded\":" +
+                String(raopStats.rtp_frames_discarded) +
+                ",\"rtp_silence_frames\":" +
+                String(raopStats.rtp_silence_frames) +
+                ",\"pcm_queue_depth\":" +
+                String(raopStats.pcm_queue_depth) +
+                "},\"audio_output\":{\"pcm_blocks\":" +
+                String(airPlayPcmBlocks.load()) +
+                ",\"bytes_written\":" +
+                String(airPlayPcmBytesWritten.load()) +
+                ",\"peak_window\":" + String(airPlayPcmPeak.load()) +
+                ",\"late_blocks_window\":" +
+                String(airPlayOutputLateBlocks.load()) +
+                ",\"max_block_late_us_window\":" +
+                String(airPlayOutputMaxLatenessUs.load()) +
+                ",\"write_errors\":" +
+                String(airPlayI2sWriteErrors.load()) +
+                ",\"last_i2s_error\":" +
+                String(airPlayLastI2sError.load()) +
+                "}},\"time\":{\"synced\":" +
                 String(networkTimeSynced ? "true" : "false") +
                 ",\"epoch\":" + String(currentEpochSeconds()) +
                 ",\"local\":\"" + jsonEscape(formattedLocalTime()) +
@@ -4082,7 +4255,7 @@ String userPlayerStatusJson() {
              String(airPlayOwnsAudio() ? "airplay" : "radio") +
          "\",\"airplay\":{\"state\":\"" + String(airPlayStateName()) +
              "\"}" +
-         "\",\"volume\":" + String(playerVolume) +
+         ",\"volume\":" + String(playerVolume) +
          ",\"selected_station\":" + String(selectedStation) +
          ",\"playlist_revision\":" + String(playlistRevision) +
          ",\"time_synced\":" + String(networkTimeSynced ? "true" : "false") +
@@ -4917,6 +5090,28 @@ void handleDiagnosticsDownload() {
           " seconds\n";
   text += "Night LED override: " +
           String(nightLedOverride ? "active" : "inactive") + "\n";
+  raop_audio_stats_t raopStats = {};
+  if (airPlayHandle != nullptr) {
+    raop_get_audio_stats(airPlayHandle, &raopStats);
+  }
+  text += "AirPlay input: " + String(raopStats.rtp_packets_received) +
+          " RTP packets, " + String(raopStats.alac_frames_decoded) +
+          " ALAC frames, " + String(raopStats.alac_decode_errors) +
+          " ALAC errors, " + String(raopStats.pcm_frames_queued) +
+          " PCM frames queued, " +
+          String(raopStats.pcm_frames_dropped) + " dropped, " +
+          String(raopStats.rtp_packets_late) + " late RTP packets, " +
+          String(raopStats.rtp_frames_discarded) + " RTP frames discarded, " +
+          String(raopStats.rtp_silence_frames) + " silence frames, queue " +
+          String(raopStats.pcm_queue_depth) + "\n";
+  text += "AirPlay output: " + String(airPlayPcmBlocks.load()) +
+          " PCM blocks, " + String(airPlayPcmBytesWritten.load()) +
+          " bytes written, window peak " + String(airPlayPcmPeak.load()) +
+          ", " + String(airPlayOutputLateBlocks.load()) +
+          " late blocks in window, max lateness " +
+          String(airPlayOutputMaxLatenessUs.load()) + " us" +
+          ", I2S errors " + String(airPlayI2sWriteErrors.load()) +
+          " (last " + String(airPlayLastI2sError.load()) + ")\n";
   for (uint8_t n = 0; n < logCount; ++n) text += String(logs[(logHead + kLogCapacity - logCount + n) % kLogCapacity]) + '\n';
   server.sendHeader("Content-Disposition", "attachment; filename=network-radio-diagnostics.txt");
   server.send(200, "text/plain; charset=utf-8", text);
@@ -5290,7 +5485,7 @@ document.addEventListener('visibilitychange',()=>{if(document.hidden){scheduleRe
 )HTML";
 
 constexpr char kAdminHtmlV302[] PROGMEM =
-R"HTML(<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>网络收音机 5.0.0 管理</title><style>
+R"HTML(<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>网络收音机 5.0.5 管理</title><style>
 :root{color-scheme:dark}body{max-width:880px;margin:24px auto;padding:0 16px;background:#101827;color:#e5e7eb;font:16px system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif}section,pre,.station,.wifi-network{background:#172234;padding:14px;border-radius:10px;margin:14px 0}button,input,select{box-sizing:border-box;padding:9px;margin:4px;border:0;border-radius:6px}input,select{width:100%}button{background:#38bdf8;color:#062032;font-weight:700;cursor:pointer}button:disabled{opacity:.38;cursor:not-allowed}.warn{background:#fbbf24}.danger{background:#fb7185}.playlist-head,.station-group{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}.playlist-head h2,.station-group strong{margin:0}.station-group{margin:24px 2px 8px;padding:10px 12px;border:1px solid #263b55;border-radius:9px;color:#67e8f9;font-size:18px;font-weight:800}.group-actions{display:flex;flex-wrap:wrap;gap:3px}.group-actions button{min-width:auto;margin:0;padding:7px 10px;font-size:13px}.station{content-visibility:auto;contain-intrinsic-size:170px}.station img,.station .fallback{display:inline-grid;width:48px;height:48px;object-fit:contain;object-position:center;background:#fff;border-radius:8px;vertical-align:middle;margin-right:10px}.station .fallback{place-items:center;background:#e89c27;color:#fff;font-weight:700}.station small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#b7c6da}.actions{display:block}.station button{min-width:82px;padding:11px 17px}.wifi-network{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px}.wifi-network b{overflow:hidden;text-overflow:ellipsis}.wifi-network button{width:auto;margin:0}.active{outline:2px solid #38bdf8}.state{font-size:1.1em;color:#67e8f9;margin-bottom:24px}.transport{display:flex;align-items:center;justify-content:center;gap:clamp(28px,8vw,72px);margin:18px 0 28px}.transport button{display:grid;place-items:center;margin:0}.skip{width:76px;height:64px;border-radius:18px;font-size:25px;background:#263449;color:#dce6f5}.play{width:92px;height:92px;border-radius:50%;font-size:36px;background:#f8fafc;color:#172234;box-shadow:0 10px 28px #0005}.volume-head{display:flex;justify-content:space-between;align-items:center;margin:0 6px 8px;color:#cbd5e1}.volume-head b{color:#fff;font-size:1.15em}.volume{width:calc(100% - 10px);accent-color:#38bdf8}.theme-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.theme-grid label{display:grid;gap:6px}.theme-grid input,.theme-grid select{margin:0}.theme-grid input[type=color]{height:54px;padding:4px;border:1px solid #ffffff26;border-radius:10px;background:#fff;color-scheme:light;cursor:pointer}.theme-grid input[type=color]::-webkit-color-swatch-wrapper{padding:0}.theme-grid input[type=color]::-webkit-color-swatch{border:0;border-radius:6px}.theme-grid input[type=color]::-moz-color-swatch{border:0;border-radius:6px}pre{overflow:auto;white-space:pre-wrap}a{color:#67e8f9}@media(max-width:560px){.theme-grid{grid-template-columns:1fr}.playlist-head{align-items:flex-start}.station{overflow-x:auto;white-space:nowrap;contain-intrinsic-size:190px}.station small{white-space:normal}.station button{min-width:auto;padding:9px 11px;margin:3px 2px}.group-actions{width:100%}.group-actions button{flex:1}}</style></head>
 <body><h1>ESP32-S3 网络收音机</h1><p>版本号：)HTML"
 NETWORK_RADIO_VERSION
@@ -5302,7 +5497,7 @@ R"HTML(　<a href="/">返回播放器</a></p>
 <section><h2>RGB 播放灯效</h2><p>仅在正常播放时生效；缓冲、错误和 OTA 状态灯优先显示。</p><div class="theme-grid"><label>灯效<select id="ledEffect"><option value="off">关闭</option><option value="rainbow">彩虹循环</option><option value="color_breathe">呼吸变色</option><option value="aurora">极光</option><option value="flame">火焰</option><option value="heartbeat">心跳</option><option value="meteor">流星</option><option value="pulse">脉冲</option><option value="random_fade">随机柔变</option><option value="music">音乐律动</option><option value="signal">状态渐变（Wi-Fi 信号）</option><option value="fixed_breathe">固定色呼吸</option><option value="temperature">色温变化</option><option value="starlight">闪烁星光</option></select></label><label>固定呼吸颜色<input id="ledFixedColor" type="color" value="#0080ff"></label></div><button id="saveLedEffect">保存 RGB 灯效</button></section>
 <section><div class="playlist-head"><h2>播放列表</h2><button id="resetGroups" class="warn">恢复默认分组顺序</button></div><div id="stations">加载中…</div><h3 id="formTitle">新增电台</h3><input id="editId" type="hidden"><input id="stationName" placeholder="电台名称"><input id="stationUrl" placeholder="http(s):// 音频流地址"><button id="saveStation">保存</button><button id="cancelEdit" class="warn">取消编辑</button></section>
 <section><h2>Wi-Fi</h2><p>最多保存 5 个网络；启动时会选择信号最强且可连接的已保存网络。</p><div id="savedWifi">读取已保存网络…</div><button id="scanWifi">扫描网络</button><select id="ssid"><option value="">选择 Wi-Fi</option></select><input id="wifiPassword" type="password" placeholder="Wi-Fi 密码（更新同名网络时请重新填写）"><button id="saveWifi">保存网络并重启连接</button><button id="forgetWifi" class="warn">清除全部 Wi-Fi 设置</button></section>
-<section><h2>串口日志</h2><p>开关会立即生效并保存；关闭只停止串口输出，诊断日志仍会保留。</p><div id="serialLogs" style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px"><label style="display:flex;align-items:center;gap:8px"><input id="logSystem" type="checkbox" style="width:auto">系统 / 存储</label><label style="display:flex;align-items:center;gap:8px"><input id="logWifi" type="checkbox" style="width:auto">Wi-Fi</label><label style="display:flex;align-items:center;gap:8px"><input id="logAudio" type="checkbox" style="width:auto">音频 / 播放恢复</label><label style="display:flex;align-items:center;gap:8px"><input id="logTouch" type="checkbox" style="width:auto">触摸按键</label></div><small id="serialLogState">正在读取…</small></section>
+<section><h2>串口日志</h2><p>开关会立即生效并保存；关闭只停止串口输出，诊断日志仍会保留。</p><div id="serialLogs" style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px"><label style="display:flex;align-items:center;gap:8px"><input id="logSystem" type="checkbox" style="width:auto">系统 / 存储</label><label style="display:flex;align-items:center;gap:8px"><input id="logWifi" type="checkbox" style="width:auto">Wi-Fi</label><label style="display:flex;align-items:center;gap:8px"><input id="logAudio" type="checkbox" style="width:auto">音频 / 播放恢复</label><label style="display:flex;align-items:center;gap:8px"><input id="logTouch" type="checkbox" style="width:auto">触摸按键</label><label style="display:flex;align-items:center;gap:8px"><input id="logAirPlay" type="checkbox" style="width:auto">AirPlay / RAOP</label></div><small id="serialLogState">正在读取…</small></section>
 <section><h2>维护与安全</h2><button id="chooseFirmware">选择固件并升级</button><input id="firmware" type="file" accept=".bin" hidden><button id="chooseResources" class="warn">选择资源镜像并升级</button><input id="resources" type="file" accept=".bin" hidden><p><small>资源升级请选择构建目录中的 <code>littlefs.bin</code>。它会更新台标、开机提示音等 LittleFS 文件，不会清除 Wi-Fi、电台或管理密码。</small></p><button id="downloadLog">下载诊断日志</button><input id="adminPassword" type="password" placeholder="设置管理密码（8–63 位，用户名 admin）"><button id="savePassword">保存管理密码</button><button id="factoryReset" class="danger">恢复出厂设置</button><p>配网热点密码独立：<code>radio-setup</code></p></section><pre id="status">读取中…</pre>
 <script>
 const q=s=>document.querySelector(s),enc=o=>new URLSearchParams(o);let stations=[],groups=[],favorites=[],selected=-1,playerState='stopped',playerSource='radio',airplayState='idle',playlistRevision=0,pollBusy=false,volumeTimer,pollCount=0;
@@ -5333,13 +5528,13 @@ async function deleteWifi(ssid){if(!confirm('删除已保存的 Wi-Fi “'+ssid+
 async function saveTheme(){try{const data=await api('/api/ui-theme',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:enc({background:q('#background').value,accent:q('#accent').value,texture:q('#texture').value})});q('#background').value=data.background;q('#accent').value=data.accent;q('#texture').value=data.texture;alert('页面外观已保存')}catch(e){alert(e.message)}}
 function applyLedSettings(data){q('#ledEffect').value=data.effect;q('#ledFixedColor').value=data.fixed_color}
 async function saveLedSettings(){try{const data=await api('/api/led-effect',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:enc({effect:q('#ledEffect').value,fixed_color:q('#ledFixedColor').value})});applyLedSettings(data);alert('RGB 灯效已保存并立即生效')}catch(e){alert(e.message)}}
-function applySerialLogs(data){q('#logSystem').checked=!!data.system;q('#logWifi').checked=!!data.wifi;q('#logAudio').checked=!!data.audio;q('#logTouch').checked=!!data.touch;q('#serialLogState').textContent='已保存'}
+function applySerialLogs(data){q('#logSystem').checked=!!data.system;q('#logWifi').checked=!!data.wifi;q('#logAudio').checked=!!data.audio;q('#logTouch').checked=!!data.touch;q('#logAirPlay').checked=!!data.airplay;q('#serialLogState').textContent='已保存'}
 async function loadSerialLogs(){try{applySerialLogs(await api('/api/serial-logs'))}catch(e){q('#serialLogState').textContent='读取失败：'+e.message}}
-async function saveSerialLogs(){q('#serialLogState').textContent='正在保存…';try{const data=await api('/api/serial-logs',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:enc({system:q('#logSystem').checked,wifi:q('#logWifi').checked,audio:q('#logAudio').checked,touch:q('#logTouch').checked})});applySerialLogs(data)}catch(e){q('#serialLogState').textContent='保存失败：'+e.message;alert(e.message)}}
+async function saveSerialLogs(){q('#serialLogState').textContent='正在保存…';try{const data=await api('/api/serial-logs',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:enc({system:q('#logSystem').checked,wifi:q('#logWifi').checked,audio:q('#logAudio').checked,touch:q('#logTouch').checked,airplay:q('#logAirPlay').checked})});applySerialLogs(data)}catch(e){q('#serialLogState').textContent='保存失败：'+e.message;alert(e.message)}}
 async function savePassword(){try{await api('/api/security/password',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:enc({password:q('#adminPassword').value})});alert('管理密码已保存；请刷新页面并用 admin 登录。')}catch(e){alert(e.message)}}
 async function uploadFirmware(file){if(!file||!confirm('上传后设备会重启，继续？'))return;const form=new FormData;form.append('firmware',file);try{await api('/api/ota',{method:'POST',body:form});q('#status').textContent='升级完成，设备正在重启…'}catch(e){alert(e.message)}}
 async function uploadResources(file){if(!file||!confirm('资源将被替换，上传后设备会重启；Wi-Fi 与电台设置会保留。继续？'))return;const form=new FormData;form.append('resources',file);try{await api('/api/ota/resources',{method:'POST',body:form});q('#status').textContent='资源升级完成，设备正在重启…'}catch(e){alert(e.message)}}
-q('#previous').addEventListener('click',()=>post('/api/player/previous'));q('#play').addEventListener('click',()=>post(playerState==='playing'?'/api/player/stop':'/api/player/play'));q('#next').addEventListener('click',()=>post('/api/player/next'));q('#volume').addEventListener('input',e=>{q('#volumeText').textContent=e.target.value;clearTimeout(volumeTimer);volumeTimer=setTimeout(()=>post('/api/player/volume?value='+encodeURIComponent(e.target.value)),180)});q('#saveStation').addEventListener('click',saveStation);q('#cancelEdit').addEventListener('click',clearForm);q('#resetGroups').addEventListener('click',()=>{if(confirm('恢复默认分组顺序？组内电台顺序不会改变。'))postGroup('/api/station-groups/reset')});q('#scanWifi').addEventListener('click',scanWifi);q('#saveWifi').addEventListener('click',saveWifi);q('#forgetWifi').addEventListener('click',()=>{if(confirm('清除全部已保存的 Wi-Fi？'))post('/api/wifi/forget')});q('#saveTheme').addEventListener('click',saveTheme);q('#saveLedEffect').addEventListener('click',saveLedSettings);['#logSystem','#logWifi','#logAudio','#logTouch'].forEach(id=>q(id).addEventListener('change',saveSerialLogs));q('#savePassword').addEventListener('click',savePassword);q('#chooseFirmware').addEventListener('click',()=>q('#firmware').click());q('#firmware').addEventListener('change',e=>uploadFirmware(e.target.files[0]));q('#chooseResources').addEventListener('click',()=>q('#resources').click());q('#resources').addEventListener('change',e=>uploadResources(e.target.files[0]));q('#downloadLog').addEventListener('click',()=>location='/api/diagnostics/download');q('#factoryReset').addEventListener('click',()=>{if(confirm('这将清除 Wi-Fi、电台、音量、页面外观、RGB 灯效和管理密码，确定？'))post('/api/factory-reset')});document.addEventListener('visibilitychange',()=>{if(!document.hidden)poll()});(async()=>{try{await refreshPlayer(false);await loadPlaylist();applyPlayer({});await Promise.all([refreshStatus(),loadSavedWifi(),loadSerialLogs(),api('/api/ui-theme').then(t=>{q('#background').value=t.background;q('#accent').value=t.accent;q('#texture').value=t.texture}),api('/api/led-effect').then(applyLedSettings)]);poll()}catch(e){q('#status').textContent='错误：'+e.message}})();
+q('#previous').addEventListener('click',()=>post('/api/player/previous'));q('#play').addEventListener('click',()=>post(playerState==='playing'?'/api/player/stop':'/api/player/play'));q('#next').addEventListener('click',()=>post('/api/player/next'));q('#volume').addEventListener('input',e=>{q('#volumeText').textContent=e.target.value;clearTimeout(volumeTimer);volumeTimer=setTimeout(()=>post('/api/player/volume?value='+encodeURIComponent(e.target.value)),180)});q('#saveStation').addEventListener('click',saveStation);q('#cancelEdit').addEventListener('click',clearForm);q('#resetGroups').addEventListener('click',()=>{if(confirm('恢复默认分组顺序？组内电台顺序不会改变。'))postGroup('/api/station-groups/reset')});q('#scanWifi').addEventListener('click',scanWifi);q('#saveWifi').addEventListener('click',saveWifi);q('#forgetWifi').addEventListener('click',()=>{if(confirm('清除全部已保存的 Wi-Fi？'))post('/api/wifi/forget')});q('#saveTheme').addEventListener('click',saveTheme);q('#saveLedEffect').addEventListener('click',saveLedSettings);['#logSystem','#logWifi','#logAudio','#logTouch','#logAirPlay'].forEach(id=>q(id).addEventListener('change',saveSerialLogs));q('#savePassword').addEventListener('click',savePassword);q('#chooseFirmware').addEventListener('click',()=>q('#firmware').click());q('#firmware').addEventListener('change',e=>uploadFirmware(e.target.files[0]));q('#chooseResources').addEventListener('click',()=>q('#resources').click());q('#resources').addEventListener('change',e=>uploadResources(e.target.files[0]));q('#downloadLog').addEventListener('click',()=>location='/api/diagnostics/download');q('#factoryReset').addEventListener('click',()=>{if(confirm('这将清除 Wi-Fi、电台、音量、页面外观、RGB 灯效和管理密码，确定？'))post('/api/factory-reset')});document.addEventListener('visibilitychange',()=>{if(!document.hidden)poll()});(async()=>{try{await refreshPlayer(false);await loadPlaylist();applyPlayer({});await Promise.all([refreshStatus(),loadSavedWifi(),loadSerialLogs(),api('/api/ui-theme').then(t=>{q('#background').value=t.background;q('#accent').value=t.accent;q('#texture').value=t.texture}),api('/api/led-effect').then(applyLedSettings)]);poll()}catch(e){q('#status').textContent='错误：'+e.message}})();
 </script></body></html>
 )HTML";
 

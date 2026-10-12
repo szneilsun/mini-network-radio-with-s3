@@ -18,6 +18,14 @@ struct raop_handle_s {
     raop_config_t config;
     char device_name[64];
     float volume;
+    uint32_t rtp_packets_received;
+    uint32_t alac_frames_decoded;
+    uint32_t alac_decode_errors;
+    uint32_t pcm_frames_queued;
+    uint32_t pcm_frames_dropped;
+    uint32_t rtp_packets_late;
+    uint32_t rtp_frames_discarded;
+    uint32_t rtp_silence_frames;
 };
 
 // ---- Internal callback: translates internal events to public API ----
@@ -41,10 +49,22 @@ static bool internal_cmd_cb(raop_internal_event_t event, ...) {
             uint8_t **buffer = va_arg(args, uint8_t**);
             size_t *size = va_arg(args, size_t*);
 
+            handle->rtp_packets_received = 0;
+            handle->alac_frames_decoded = 0;
+            handle->alac_decode_errors = 0;
+            handle->pcm_frames_queued = 0;
+            handle->pcm_frames_dropped = 0;
+            handle->rtp_packets_late = 0;
+            handle->rtp_frames_discarded = 0;
+            handle->rtp_silence_frames = 0;
             *size = 352 * 4 * 512;
             *buffer = heap_caps_malloc(*size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
             if (!*buffer) {
-                ESP_LOGE(TAG, "Failed to allocate RTP buffer");
+                ESP_LOGE(TAG, "Failed to allocate %u-byte RTP buffer "
+                              "(PSRAM free=%u, largest=%u)",
+                         (unsigned)*size,
+                         (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT),
+                         (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
                 *size = 0;
                 success = false;
                 break;
@@ -53,7 +73,10 @@ static bool internal_cmd_cb(raop_internal_event_t event, ...) {
             audio_buffer_init(handle->config.audio_output_cb, handle->config.user_ctx,
                   handle->config.pcm_tap_cb, &handle->volume);
             if (!audio_buffer_is_ready()) {
-                ESP_LOGE(TAG, "Failed to allocate audio frame buffer");
+                ESP_LOGE(TAG, "Audio frame buffer initialization failed "
+                              "(PSRAM free=%u, largest=%u)",
+                         (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT),
+                         (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
                 free(*buffer);
                 *buffer = NULL;
                 *size = 0;
@@ -198,9 +221,44 @@ static bool internal_cmd_cb(raop_internal_event_t event, ...) {
 // ---- Single instance support ----
 raop_handle_t *s_handle = NULL;
 
+void raop_stats_rtp_packet_received(void) {
+    if (s_handle) __atomic_fetch_add(&s_handle->rtp_packets_received, 1, __ATOMIC_RELAXED);
+}
+
+void raop_stats_alac_frame_decoded(void) {
+    if (s_handle) __atomic_fetch_add(&s_handle->alac_frames_decoded, 1, __ATOMIC_RELAXED);
+}
+
+void raop_stats_alac_decode_error(void) {
+    if (s_handle) __atomic_fetch_add(&s_handle->alac_decode_errors, 1, __ATOMIC_RELAXED);
+}
+
+void raop_stats_pcm_frame_queued(void) {
+    if (s_handle) __atomic_fetch_add(&s_handle->pcm_frames_queued, 1, __ATOMIC_RELAXED);
+}
+
+void raop_stats_pcm_frame_dropped(void) {
+    if (s_handle) __atomic_fetch_add(&s_handle->pcm_frames_dropped, 1, __ATOMIC_RELAXED);
+}
+
+void raop_stats_rtp_packet_late(void) {
+    if (s_handle) __atomic_fetch_add(&s_handle->rtp_packets_late, 1, __ATOMIC_RELAXED);
+}
+
+void raop_stats_rtp_frame_discarded(void) {
+    if (s_handle) __atomic_fetch_add(&s_handle->rtp_frames_discarded, 1, __ATOMIC_RELAXED);
+}
+
+void raop_stats_rtp_silence_frame(void) {
+    if (s_handle) __atomic_fetch_add(&s_handle->rtp_silence_frames, 1, __ATOMIC_RELAXED);
+}
+
 static void internal_data_cb(const uint8_t *data, size_t len, uint32_t playtime) {
     if (!audio_buffer_write(data, len, playtime)) {
+        raop_stats_pcm_frame_dropped();
         ESP_LOGW(TAG, "Failed to buffer audio frame");
+    } else {
+        raop_stats_pcm_frame_queued();
     }
 }
 
@@ -305,6 +363,32 @@ esp_err_t raop_deinit(raop_handle_t *handle) {
 
     s_handle = NULL;
     free(handle);
+    return ESP_OK;
+}
+
+esp_err_t raop_get_audio_stats(raop_handle_t *handle,
+                               raop_audio_stats_t *stats) {
+    if (!handle || !stats) return ESP_ERR_INVALID_ARG;
+    if (handle != s_handle) return ESP_ERR_RAOP_NOT_INIT;
+
+    stats->rtp_packets_received =
+        __atomic_load_n(&handle->rtp_packets_received, __ATOMIC_RELAXED);
+    stats->alac_frames_decoded =
+        __atomic_load_n(&handle->alac_frames_decoded, __ATOMIC_RELAXED);
+    stats->alac_decode_errors =
+        __atomic_load_n(&handle->alac_decode_errors, __ATOMIC_RELAXED);
+    stats->pcm_frames_queued =
+        __atomic_load_n(&handle->pcm_frames_queued, __ATOMIC_RELAXED);
+    stats->pcm_frames_dropped =
+        __atomic_load_n(&handle->pcm_frames_dropped, __ATOMIC_RELAXED);
+    stats->rtp_packets_late =
+        __atomic_load_n(&handle->rtp_packets_late, __ATOMIC_RELAXED);
+    stats->rtp_frames_discarded =
+        __atomic_load_n(&handle->rtp_frames_discarded, __ATOMIC_RELAXED);
+    stats->rtp_silence_frames =
+        __atomic_load_n(&handle->rtp_silence_frames, __ATOMIC_RELAXED);
+    uint32_t head_playtime = 0;
+    audio_buffer_get_timing(&stats->pcm_queue_depth, &head_playtime);
     return ESP_OK;
 }
 

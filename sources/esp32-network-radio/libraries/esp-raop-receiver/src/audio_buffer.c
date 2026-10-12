@@ -4,13 +4,15 @@
 #include "freertos/semphr.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "esp_heap_caps.h"
 #include <string.h>
 #include "math.h"
 
 static const char *TAG = "audio_buffer";
 
 #define BUFFER_FRAMES 512
-#define MAX_FRAME_SIZE 2048
+#define MAX_FRAME_SIZE 1408
+#define IDLE_WAIT_MS 100
 #define TIMING_THRESHOLD_MS 50  // Max drift before correction
 #define TAP_LOOKAHEAD_MS    150  // Fire PCM tap this many ms before playtime
 
@@ -47,13 +49,25 @@ static uint32_t gettime_ms(void) {
     return (uint32_t)(esp_timer_get_time() / 1000ULL);
 }
 
+static void wait_for_audio(uint32_t wait_ms) {
+    TickType_t ticks = pdMS_TO_TICKS(wait_ms);
+    if (ticks == 0) ticks = 1;
+    ulTaskNotifyTake(pdTRUE, ticks);
+}
+
+static void notify_output_task(void) {
+    if (audio_buf.running && audio_buf.task) {
+        xTaskNotifyGive(audio_buf.task);
+    }
+}
+
 static void audio_output_task(void *arg) {
     ESP_LOGD(TAG, "Audio output task started");
 
     while (audio_buf.running) {
         // Wait until we have a start time
         if (audio_buf.start_time == 0) {
-            vTaskDelay(pdMS_TO_TICKS(10));
+            wait_for_audio(IDLE_WAIT_MS);
             continue;
         }
 
@@ -113,10 +127,12 @@ static void audio_output_task(void *arg) {
                 }
 
                 // Check if it's time to play this frame
-                if (now < frame->playtime) {
-                    // Too early, wait
+                int32_t until_playtime = (int32_t)(frame->playtime - now);
+                if (until_playtime > 0) {
                     xSemaphoreGive(audio_buf.mutex);
-                    vTaskDelay(pdMS_TO_TICKS(5));
+                    wait_for_audio(until_playtime > 1
+                                       ? (uint32_t)(until_playtime - 1)
+                                       : 1);
                     continue;
                 }
 
@@ -152,11 +168,11 @@ static void audio_output_task(void *arg) {
                 audio_buf.output_cb(data, len, audio_buf.user_ctx);
             } else {
                 xSemaphoreGive(audio_buf.mutex);
-                vTaskDelay(pdMS_TO_TICKS(10));
+                wait_for_audio(IDLE_WAIT_MS);
             }
         } else {
             xSemaphoreGive(audio_buf.mutex);
-            vTaskDelay(pdMS_TO_TICKS(10));
+            wait_for_audio(IDLE_WAIT_MS);
         }
     }
 
@@ -188,7 +204,12 @@ void audio_buffer_init(audio_output_callback_t output_cb, void *user_ctx,
     audio_buf.frames = heap_caps_malloc(BUFFER_FRAMES * sizeof(audio_frame_t),
                                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!audio_buf.frames) {
-        ESP_LOGE(TAG, "Failed to allocate frame buffer in PSRAM");
+        const size_t requested = BUFFER_FRAMES * sizeof(audio_frame_t);
+        ESP_LOGE(TAG, "Failed to allocate %u-byte frame buffer in PSRAM "
+                      "(free=%u, largest=%u)",
+                 (unsigned)requested,
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
         return;
     }
 
@@ -226,7 +247,7 @@ void audio_buffer_start(void) {
         "audio_output",
         4096,
         NULL,
-        3,
+        4,
         &audio_buf.task,
         1
     );
@@ -242,6 +263,7 @@ void audio_buffer_set_start_time(uint32_t playtime) {
 
     audio_buf.start_time = playtime;
     ESP_LOGD(TAG, "Start time set to %u ms", playtime);
+    notify_output_task();
 }
 
 void audio_buffer_stop(void) {
@@ -290,6 +312,7 @@ bool audio_buffer_write(const uint8_t *data, size_t len, uint32_t playtime) {
             audio_buf.write_idx = next_write;
 
             xSemaphoreGive(audio_buf.mutex);
+            notify_output_task();
             return true;
         }
 
@@ -380,5 +403,5 @@ void audio_buffer_pause_frames(uint32_t count) {
 }
 
 bool audio_buffer_is_ready(void) {
-    return audio_buf.frames != NULL && audio_buf.running;
+    return audio_buf.frames != NULL && audio_buf.mutex != NULL;
 }

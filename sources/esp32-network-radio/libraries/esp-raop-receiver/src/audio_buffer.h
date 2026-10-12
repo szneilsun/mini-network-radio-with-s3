@@ -40,5 +40,5 @@ void audio_buffer_get_timing(uint32_t *frames_buffered, uint32_t *head_playtime)
 void audio_buffer_skip_frames(uint32_t count);
 void audio_buffer_pause_frames(uint32_t count);
 
-// Initialization check
+// True when the buffer and its synchronization primitive are initialized.
 bool audio_buffer_is_ready(void);
