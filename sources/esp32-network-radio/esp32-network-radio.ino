@@ -1,5 +1,5 @@
 /*
- * Network Radio 5.0.5 standalone Arduino sketch.
+ * Network Radio 5.0.6 standalone Arduino sketch.
  * Project-local source dependencies are inlined in this file.
  *
  * The superseded V4 test-tone/I2S path and unused legacy web pages have
@@ -9,7 +9,7 @@
 
 /* Network Radio 3.0: player UI, administration UI, and WS2812B status LED. */
 
-#define NETWORK_RADIO_VERSION "5.0.5"
+#define NETWORK_RADIO_VERSION "5.0.6"
 #define NETWORK_RADIO_MAX_STATIONS 512
 #ifdef NETWORK_RADIO_NO_ENTRYPOINT
 #define NETWORK_RADIO_V8_NO_ENTRYPOINT
@@ -90,7 +90,7 @@ void audio_process_i2s(int32_t *outBuff, int16_t validSamples,
 
 namespace config {
 #ifndef NETWORK_RADIO_VERSION
-#define NETWORK_RADIO_VERSION "5.0.5"
+#define NETWORK_RADIO_VERSION "5.0.6"
 #endif
 constexpr char kFirmwareVersion[] = NETWORK_RADIO_VERSION;
 constexpr uint32_t kSerialBaud = 115200;
@@ -4394,6 +4394,37 @@ void printTouchStatus() {
   printTouchButtonStatus("play", playPauseTouch);
 }
 
+String touchStatusJson() {
+  const auto buttonJson = [](const char *name, const TouchButton &button) {
+    return String("{\"name\":\"") + name + "\",\"gpio\":" +
+           String(button.pin) + ",\"raw\":" +
+           String(static_cast<unsigned long>(button.lastValue)) +
+           ",\"baseline\":" +
+           String(static_cast<unsigned long>(button.baseline)) +
+           ",\"press\":" +
+           String(static_cast<unsigned long>(touchPressThreshold(button))) +
+           ",\"release\":" +
+           String(static_cast<unsigned long>(touchReleaseThreshold(button))) +
+           ",\"pressed\":" + (button.pressed ? "true" : "false") +
+           ",\"ready\":" + (button.ready ? "true" : "false") + "}";
+  };
+  return String("{\"uptime_ms\":") + String(millis()) +
+         ",\"sensitivity\":" + String(touchSensitivityPercent) +
+         ",\"calibrating\":" +
+         (touchCalibrationInProgress ? "true" : "false") +
+         ",\"calibration_sample\":" +
+         String(touchCalibrationSampleCount) +
+         ",\"calibration_samples\":" +
+         String(config::kTouchCalibrationSamples) +
+         ",\"buttons\":[" + buttonJson("previous", previousTouch) +
+         "," + buttonJson("next", nextTouch) + "," +
+         buttonJson("play", playPauseTouch) + "]}";
+}
+
+void handleTouchStatus() {
+  if (requireAdmin()) sendJson(touchStatusJson());
+}
+
 void calibrateTouchButton(TouchButton &button) {
   uint64_t total = 0;
   for (uint8_t sample = 0; sample < config::kTouchCalibrationSamples;
@@ -5485,7 +5516,7 @@ document.addEventListener('visibilitychange',()=>{if(document.hidden){scheduleRe
 )HTML";
 
 constexpr char kAdminHtmlV302[] PROGMEM =
-R"HTML(<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>网络收音机 5.0.5 管理</title><style>
+R"HTML(<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>网络收音机 5.0.6 管理</title><style>
 :root{color-scheme:dark}body{max-width:880px;margin:24px auto;padding:0 16px;background:#101827;color:#e5e7eb;font:16px system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif}section,pre,.station,.wifi-network{background:#172234;padding:14px;border-radius:10px;margin:14px 0}button,input,select{box-sizing:border-box;padding:9px;margin:4px;border:0;border-radius:6px}input,select{width:100%}button{background:#38bdf8;color:#062032;font-weight:700;cursor:pointer}button:disabled{opacity:.38;cursor:not-allowed}.warn{background:#fbbf24}.danger{background:#fb7185}.playlist-head,.station-group{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}.playlist-head h2,.station-group strong{margin:0}.station-group{margin:24px 2px 8px;padding:10px 12px;border:1px solid #263b55;border-radius:9px;color:#67e8f9;font-size:18px;font-weight:800}.group-actions{display:flex;flex-wrap:wrap;gap:3px}.group-actions button{min-width:auto;margin:0;padding:7px 10px;font-size:13px}.station{content-visibility:auto;contain-intrinsic-size:170px}.station img,.station .fallback{display:inline-grid;width:48px;height:48px;object-fit:contain;object-position:center;background:#fff;border-radius:8px;vertical-align:middle;margin-right:10px}.station .fallback{place-items:center;background:#e89c27;color:#fff;font-weight:700}.station small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#b7c6da}.actions{display:block}.station button{min-width:82px;padding:11px 17px}.wifi-network{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px}.wifi-network b{overflow:hidden;text-overflow:ellipsis}.wifi-network button{width:auto;margin:0}.active{outline:2px solid #38bdf8}.state{font-size:1.1em;color:#67e8f9;margin-bottom:24px}.transport{display:flex;align-items:center;justify-content:center;gap:clamp(28px,8vw,72px);margin:18px 0 28px}.transport button{display:grid;place-items:center;margin:0}.skip{width:76px;height:64px;border-radius:18px;font-size:25px;background:#263449;color:#dce6f5}.play{width:92px;height:92px;border-radius:50%;font-size:36px;background:#f8fafc;color:#172234;box-shadow:0 10px 28px #0005}.volume-head{display:flex;justify-content:space-between;align-items:center;margin:0 6px 8px;color:#cbd5e1}.volume-head b{color:#fff;font-size:1.15em}.volume{width:calc(100% - 10px);accent-color:#38bdf8}.theme-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.theme-grid label{display:grid;gap:6px}.theme-grid input,.theme-grid select{margin:0}.theme-grid input[type=color]{height:54px;padding:4px;border:1px solid #ffffff26;border-radius:10px;background:#fff;color-scheme:light;cursor:pointer}.theme-grid input[type=color]::-webkit-color-swatch-wrapper{padding:0}.theme-grid input[type=color]::-webkit-color-swatch{border:0;border-radius:6px}.theme-grid input[type=color]::-moz-color-swatch{border:0;border-radius:6px}pre{overflow:auto;white-space:pre-wrap}a{color:#67e8f9}@media(max-width:560px){.theme-grid{grid-template-columns:1fr}.playlist-head{align-items:flex-start}.station{overflow-x:auto;white-space:nowrap;contain-intrinsic-size:190px}.station small{white-space:normal}.station button{min-width:auto;padding:9px 11px;margin:3px 2px}.group-actions{width:100%}.group-actions button{flex:1}}</style></head>
 <body><h1>ESP32-S3 网络收音机</h1><p>版本号：)HTML"
 NETWORK_RADIO_VERSION
@@ -5498,6 +5529,7 @@ R"HTML(　<a href="/">返回播放器</a></p>
 <section><div class="playlist-head"><h2>播放列表</h2><button id="resetGroups" class="warn">恢复默认分组顺序</button></div><div id="stations">加载中…</div><h3 id="formTitle">新增电台</h3><input id="editId" type="hidden"><input id="stationName" placeholder="电台名称"><input id="stationUrl" placeholder="http(s):// 音频流地址"><button id="saveStation">保存</button><button id="cancelEdit" class="warn">取消编辑</button></section>
 <section><h2>Wi-Fi</h2><p>最多保存 5 个网络；启动时会选择信号最强且可连接的已保存网络。</p><div id="savedWifi">读取已保存网络…</div><button id="scanWifi">扫描网络</button><select id="ssid"><option value="">选择 Wi-Fi</option></select><input id="wifiPassword" type="password" placeholder="Wi-Fi 密码（更新同名网络时请重新填写）"><button id="saveWifi">保存网络并重启连接</button><button id="forgetWifi" class="warn">清除全部 Wi-Fi 设置</button></section>
 <section><h2>串口日志</h2><p>开关会立即生效并保存；关闭只停止串口输出，诊断日志仍会保留。</p><div id="serialLogs" style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px"><label style="display:flex;align-items:center;gap:8px"><input id="logSystem" type="checkbox" style="width:auto">系统 / 存储</label><label style="display:flex;align-items:center;gap:8px"><input id="logWifi" type="checkbox" style="width:auto">Wi-Fi</label><label style="display:flex;align-items:center;gap:8px"><input id="logAudio" type="checkbox" style="width:auto">音频 / 播放恢复</label><label style="display:flex;align-items:center;gap:8px"><input id="logTouch" type="checkbox" style="width:auto">触摸按键</label><label style="display:flex;align-items:center;gap:8px"><input id="logAirPlay" type="checkbox" style="width:auto">AirPlay / RAOP</label></div><small id="serialLogState">正在读取…</small></section>
+<section><div class="playlist-head"><h2>触摸传感器实时日志</h2><label style="display:flex;align-items:center;gap:8px"><input id="touchMonitorEnabled" type="checkbox" style="width:auto">启用</label></div><p>每 500 毫秒读取一次当前值；按下触摸区域时可观察 raw 值与阈值变化。此页面日志仅保留在浏览器中。</p><small id="touchMonitorState">已停用</small><pre id="touchMonitor" aria-live="polite" style="max-height:260px;overflow:auto;font:12px ui-monospace,SFMono-Regular,monospace"></pre></section>
 <section><h2>维护与安全</h2><button id="chooseFirmware">选择固件并升级</button><input id="firmware" type="file" accept=".bin" hidden><button id="chooseResources" class="warn">选择资源镜像并升级</button><input id="resources" type="file" accept=".bin" hidden><p><small>资源升级请选择构建目录中的 <code>littlefs.bin</code>。它会更新台标、开机提示音等 LittleFS 文件，不会清除 Wi-Fi、电台或管理密码。</small></p><button id="downloadLog">下载诊断日志</button><input id="adminPassword" type="password" placeholder="设置管理密码（8–63 位，用户名 admin）"><button id="savePassword">保存管理密码</button><button id="factoryReset" class="danger">恢复出厂设置</button><p>配网热点密码独立：<code>radio-setup</code></p></section><pre id="status">读取中…</pre>
 <script>
 const q=s=>document.querySelector(s),enc=o=>new URLSearchParams(o);let stations=[],groups=[],favorites=[],selected=-1,playerState='stopped',playerSource='radio',airplayState='idle',playlistRevision=0,pollBusy=false,volumeTimer,pollCount=0;
@@ -5531,10 +5563,13 @@ async function saveLedSettings(){try{const data=await api('/api/led-effect',{met
 function applySerialLogs(data){q('#logSystem').checked=!!data.system;q('#logWifi').checked=!!data.wifi;q('#logAudio').checked=!!data.audio;q('#logTouch').checked=!!data.touch;q('#logAirPlay').checked=!!data.airplay;q('#serialLogState').textContent='已保存'}
 async function loadSerialLogs(){try{applySerialLogs(await api('/api/serial-logs'))}catch(e){q('#serialLogState').textContent='读取失败：'+e.message}}
 async function saveSerialLogs(){q('#serialLogState').textContent='正在保存…';try{const data=await api('/api/serial-logs',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:enc({system:q('#logSystem').checked,wifi:q('#logWifi').checked,audio:q('#logAudio').checked,touch:q('#logTouch').checked,airplay:q('#logAirPlay').checked})});applySerialLogs(data)}catch(e){q('#serialLogState').textContent='保存失败：'+e.message;alert(e.message)}}
+let touchMonitorBusy=false,touchMonitorLines=[],touchMonitorTimer,touchMonitorEpoch=0;
+async function pollTouchMonitor(){if(touchMonitorBusy||!q('#touchMonitorEnabled').checked||document.hidden)return;touchMonitorBusy=true;const epoch=touchMonitorEpoch;try{const data=await api('/api/touch/status');if(epoch!==touchMonitorEpoch||document.hidden)return;const stamp=(data.uptime_ms/1000).toFixed(1)+'s';const rows=data.buttons.map(b=>`[${stamp}] TOUCH ${b.name.padEnd(8)} gpio=${b.gpio} raw=${b.raw} baseline=${b.baseline} press=${b.press} release=${b.release} state=${b.pressed?'pressed':'released'} ready=${b.ready?'yes':'no'}`);if(data.calibrating)rows.unshift(`[${stamp}] TOUCH calibration ${data.calibration_sample}/${data.calibration_samples}`);touchMonitorLines.push(...rows);if(touchMonitorLines.length> 90)touchMonitorLines=touchMonitorLines.slice(-90);q('#touchMonitor').textContent=touchMonitorLines.join('\n');q('#touchMonitor').scrollTop=q('#touchMonitor').scrollHeight;q('#touchMonitorState').textContent=`实时 · 灵敏度 ${data.sensitivity}% · 更新于设备运行 ${stamp}`}catch(e){if(epoch===touchMonitorEpoch)q('#touchMonitorState').textContent='读取失败：'+e.message}finally{touchMonitorBusy=false;if(q('#touchMonitorEnabled').checked&&!document.hidden)touchMonitorTimer=setTimeout(pollTouchMonitor,500)}}
+function toggleTouchMonitor(){++touchMonitorEpoch;clearTimeout(touchMonitorTimer);if(q('#touchMonitorEnabled').checked){q('#touchMonitorState').textContent='正在连接…';pollTouchMonitor()}else{q('#touchMonitorState').textContent='已停用';touchMonitorLines=[];q('#touchMonitor').textContent=''}}
 async function savePassword(){try{await api('/api/security/password',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:enc({password:q('#adminPassword').value})});alert('管理密码已保存；请刷新页面并用 admin 登录。')}catch(e){alert(e.message)}}
 async function uploadFirmware(file){if(!file||!confirm('上传后设备会重启，继续？'))return;const form=new FormData;form.append('firmware',file);try{await api('/api/ota',{method:'POST',body:form});q('#status').textContent='升级完成，设备正在重启…'}catch(e){alert(e.message)}}
 async function uploadResources(file){if(!file||!confirm('资源将被替换，上传后设备会重启；Wi-Fi 与电台设置会保留。继续？'))return;const form=new FormData;form.append('resources',file);try{await api('/api/ota/resources',{method:'POST',body:form});q('#status').textContent='资源升级完成，设备正在重启…'}catch(e){alert(e.message)}}
-q('#previous').addEventListener('click',()=>post('/api/player/previous'));q('#play').addEventListener('click',()=>post(playerState==='playing'?'/api/player/stop':'/api/player/play'));q('#next').addEventListener('click',()=>post('/api/player/next'));q('#volume').addEventListener('input',e=>{q('#volumeText').textContent=e.target.value;clearTimeout(volumeTimer);volumeTimer=setTimeout(()=>post('/api/player/volume?value='+encodeURIComponent(e.target.value)),180)});q('#saveStation').addEventListener('click',saveStation);q('#cancelEdit').addEventListener('click',clearForm);q('#resetGroups').addEventListener('click',()=>{if(confirm('恢复默认分组顺序？组内电台顺序不会改变。'))postGroup('/api/station-groups/reset')});q('#scanWifi').addEventListener('click',scanWifi);q('#saveWifi').addEventListener('click',saveWifi);q('#forgetWifi').addEventListener('click',()=>{if(confirm('清除全部已保存的 Wi-Fi？'))post('/api/wifi/forget')});q('#saveTheme').addEventListener('click',saveTheme);q('#saveLedEffect').addEventListener('click',saveLedSettings);['#logSystem','#logWifi','#logAudio','#logTouch','#logAirPlay'].forEach(id=>q(id).addEventListener('change',saveSerialLogs));q('#savePassword').addEventListener('click',savePassword);q('#chooseFirmware').addEventListener('click',()=>q('#firmware').click());q('#firmware').addEventListener('change',e=>uploadFirmware(e.target.files[0]));q('#chooseResources').addEventListener('click',()=>q('#resources').click());q('#resources').addEventListener('change',e=>uploadResources(e.target.files[0]));q('#downloadLog').addEventListener('click',()=>location='/api/diagnostics/download');q('#factoryReset').addEventListener('click',()=>{if(confirm('这将清除 Wi-Fi、电台、音量、页面外观、RGB 灯效和管理密码，确定？'))post('/api/factory-reset')});document.addEventListener('visibilitychange',()=>{if(!document.hidden)poll()});(async()=>{try{await refreshPlayer(false);await loadPlaylist();applyPlayer({});await Promise.all([refreshStatus(),loadSavedWifi(),loadSerialLogs(),api('/api/ui-theme').then(t=>{q('#background').value=t.background;q('#accent').value=t.accent;q('#texture').value=t.texture}),api('/api/led-effect').then(applyLedSettings)]);poll()}catch(e){q('#status').textContent='错误：'+e.message}})();
+q('#previous').addEventListener('click',()=>post('/api/player/previous'));q('#play').addEventListener('click',()=>post(playerState==='playing'?'/api/player/stop':'/api/player/play'));q('#next').addEventListener('click',()=>post('/api/player/next'));q('#volume').addEventListener('input',e=>{q('#volumeText').textContent=e.target.value;clearTimeout(volumeTimer);volumeTimer=setTimeout(()=>post('/api/player/volume?value='+encodeURIComponent(e.target.value)),180)});q('#saveStation').addEventListener('click',saveStation);q('#cancelEdit').addEventListener('click',clearForm);q('#resetGroups').addEventListener('click',()=>{if(confirm('恢复默认分组顺序？组内电台顺序不会改变。'))postGroup('/api/station-groups/reset')});q('#scanWifi').addEventListener('click',scanWifi);q('#saveWifi').addEventListener('click',saveWifi);q('#forgetWifi').addEventListener('click',()=>{if(confirm('清除全部已保存的 Wi-Fi？'))post('/api/wifi/forget')});q('#saveTheme').addEventListener('click',saveTheme);q('#saveLedEffect').addEventListener('click',saveLedSettings);['#logSystem','#logWifi','#logAudio','#logTouch','#logAirPlay'].forEach(id=>q(id).addEventListener('change',saveSerialLogs));q('#touchMonitorEnabled').addEventListener('change',toggleTouchMonitor);q('#savePassword').addEventListener('click',savePassword);q('#chooseFirmware').addEventListener('click',()=>q('#firmware').click());q('#firmware').addEventListener('change',e=>uploadFirmware(e.target.files[0]));q('#chooseResources').addEventListener('click',()=>q('#resources').click());q('#resources').addEventListener('change',e=>uploadResources(e.target.files[0]));q('#downloadLog').addEventListener('click',()=>location='/api/diagnostics/download');q('#factoryReset').addEventListener('click',()=>{if(confirm('这将清除 Wi-Fi、电台、音量、页面外观、RGB 灯效和管理密码，确定？'))post('/api/factory-reset')});document.addEventListener('visibilitychange',()=>{if(!document.hidden){poll();if(q('#touchMonitorEnabled').checked)pollTouchMonitor()}else clearTimeout(touchMonitorTimer)});(async()=>{try{await refreshPlayer(false);await loadPlaylist();applyPlayer({});await Promise.all([refreshStatus(),loadSavedWifi(),loadSerialLogs(),api('/api/ui-theme').then(t=>{q('#background').value=t.background;q('#accent').value=t.accent;q('#texture').value=t.texture}),api('/api/led-effect').then(applyLedSettings)]);poll()}catch(e){q('#status').textContent='错误：'+e.message}})();
 </script></body></html>
 )HTML";
 
@@ -5591,6 +5626,7 @@ void configureWebServerV8() {
   server.on("/api/diagnostics", HTTP_GET, handleDiagnostics);
   server.on("/api/diagnostics/download", HTTP_GET, handleDiagnosticsDownload);
   server.on("/api/security/password", HTTP_POST, handleSetPassword);
+  server.on("/api/touch/status", HTTP_GET, handleTouchStatus);
   server.on("/api/serial-logs", HTTP_GET, [] {
     if (requireAdmin()) sendJson(serialLogSettingsJson());
   });
